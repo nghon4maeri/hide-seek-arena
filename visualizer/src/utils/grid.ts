@@ -23,8 +23,7 @@ export function clampFrame(frame: number, max: number): number {
 
 export function maxSearchFrames(trace: any): number {
   const bfs = trace?.bfs?.explored_order?.length ?? 0;
-  const flood = trace?.flood_fill?.safe_cells?.length ?? 0;
-  const astar = Math.max(trace?.astar?.open_set?.length ?? 0, trace?.astar?.closed_set?.length ?? 0);
+  const flood = Math.max(trace?.flood_fill?.safe_cells?.length ?? 0, trace?.flood_fill?.expansion_order?.length ?? 0);
+  const astar = Math.max(trace?.astar?.frames?.length ?? 0, trace?.astar?.open_set?.length ?? 0, trace?.astar?.closed_set?.length ?? 0);
   return Math.max(1, bfs, flood, astar);
 }
-

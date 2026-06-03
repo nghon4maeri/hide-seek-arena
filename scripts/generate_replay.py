@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import argparse
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
@@ -17,6 +18,7 @@ from src.core.official_map import (
     OFFICIAL_MAP_WIDTH,
     PACMAN_START,
 )
+from src.debug.full_trace import build_full_trace
 
 
 def pos_list(value) -> List[int]:
@@ -133,19 +135,55 @@ def convert_replay(raw: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--trace-level",
+        choices=["none", "summary", "detailed", "full"],
+        default="full",
+        help="Trace detail level for generated visualizer replay.",
+    )
+    args = parser.parse_args()
     simulator = LocalSimulator(
         grid=[row[:] for row in OFFICIAL_MAP_GRID],
         pacman=PACMAN_START,
         ghost=GHOST_START,
         max_steps=40,
     )
-    raw = simulator.run(debug=True)
+    raw = simulator.run(debug=args.trace_level != "none")
     replay = convert_replay(raw)
+    if args.trace_level != "none":
+        for frame, step in zip(raw["frames"], replay["steps"]):
+            hide_trace = build_full_trace(
+                raw["grid"],
+                tuple(frame["pacman"]),
+                tuple(frame["ghost"]),
+                int(frame["step"]),
+                "hide",
+                frame["hide_action"],
+                frame.get("hide_trace"),
+                trace_level=args.trace_level,
+            )
+            seek_trace = build_full_trace(
+                raw["grid"],
+                tuple(frame["ghost"]),
+                tuple(frame["pacman"]),
+                int(frame["step"]),
+                "seek",
+                frame["seek_action"],
+                frame.get("seek_trace"),
+                trace_level=args.trace_level,
+            )
+            step["hide"]["trace"] = hide_trace
+            step["seek"]["trace"] = seek_trace
+    else:
+        for step in replay["steps"]:
+            step["hide"]["trace"] = {}
+            step["seek"]["trace"] = {}
     out = ROOT / "visualizer" / "public" / "sample_replay.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(replay, indent=2), encoding="utf-8")
     print(
-        f"generated {out} with {len(replay['steps'])} steps "
+        f"generated {out} with {len(replay['steps'])} steps trace_level={args.trace_level} "
         f"on official map {OFFICIAL_MAP_WIDTH}x{OFFICIAL_MAP_HEIGHT} "
         f"pacman={PACMAN_START} ghost={GHOST_START}"
     )
