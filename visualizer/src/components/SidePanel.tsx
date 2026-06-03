@@ -6,7 +6,7 @@ import ScoreTable from "./ScoreTable";
 interface SidePanelProps {
   step: ReplayStep;
   trace: AgentTrace;
-  activeAgent: ActiveAgent;
+  activeAgent: Exclude<ActiveAgent, "both">;
   searchFrame: number;
   maxFrames: number;
 }

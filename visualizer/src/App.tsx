@@ -1,3 +1,4 @@
+import AlgorithmStepInspector from "./components/AlgorithmStepInspector";
 import ControlsPanel from "./components/ControlsPanel";
 import LayerToggles from "./components/LayerToggles";
 import Legend from "./components/Legend";
@@ -19,7 +20,9 @@ export default function App() {
     previousSearchFrame: playback.previousSearchFrame,
     nextSearchFrame: playback.nextSearchFrame,
     switchAgent: playback.switchAgent,
-    toggleLayer: playback.toggleLayer
+    toggleLayer: playback.toggleLayer,
+    setActiveInspector: playback.setActiveInspector,
+    allLayersOff: playback.allLayersOff
   });
 
   if (error) {
@@ -54,7 +57,7 @@ export default function App() {
           </p>
         </header>
 
-        <section className="grid gap-4 xl:grid-cols-[minmax(680px,1fr)_420px]">
+        <section className="grid gap-4 xl:grid-cols-[minmax(620px,0.9fr)_minmax(420px,0.8fr)_420px]">
           <div className="flex flex-col gap-4">
             <MapCanvas
               grid={replay.map}
@@ -66,6 +69,16 @@ export default function App() {
               searchFrame={playback.searchFrame}
               layers={playback.layers}
             />
+          </div>
+
+          <AlgorithmStepInspector
+            trace={playback.trace}
+            activeInspector={playback.activeInspector}
+            setActiveInspector={playback.setActiveInspector}
+            searchFrame={playback.searchFrame}
+          />
+
+          <div className="flex flex-col gap-4">
             <ControlsPanel
               playing={playback.playing}
               setPlaying={playback.setPlaying}
@@ -78,28 +91,32 @@ export default function App() {
               previousSearchFrame={playback.previousSearchFrame}
               nextSearchFrame={playback.nextSearchFrame}
             />
-            <TimelinePanel
-              stepIndex={playback.stepIndex}
-              totalSteps={playback.totalSteps}
-              setStepIndex={playback.setStepIndex}
-              searchFrame={playback.searchFrame}
-              maxFrames={playback.maxFrames}
-              setSearchFrame={playback.setSearchFrame}
-            />
-          </div>
-
-          <div className="flex flex-col gap-4">
-            <SidePanel
-              step={playback.step}
-              trace={playback.trace}
-              activeAgent={playback.activeAgent}
-              searchFrame={playback.searchFrame}
-              maxFrames={playback.maxFrames}
-            />
+            {playback.activeAgent === "both" && playback.hideTrace && playback.seekTrace ? (
+              <>
+                <SidePanel step={playback.step} trace={playback.hideTrace} activeAgent="hide" searchFrame={playback.searchFrame} maxFrames={playback.maxFrames} />
+                <SidePanel step={playback.step} trace={playback.seekTrace} activeAgent="seek" searchFrame={playback.searchFrame} maxFrames={playback.maxFrames} />
+              </>
+            ) : (
+              <SidePanel
+                step={playback.step}
+                trace={playback.trace}
+                activeAgent={playback.activeAgent === "seek" ? "seek" : "hide"}
+                searchFrame={playback.searchFrame}
+                maxFrames={playback.maxFrames}
+              />
+            )}
             <LayerToggles layers={playback.layers} toggleLayer={playback.toggleLayer} />
             <Legend />
           </div>
         </section>
+        <TimelinePanel
+          stepIndex={playback.stepIndex}
+          totalSteps={playback.totalSteps}
+          setStepIndex={playback.setStepIndex}
+          searchFrame={playback.searchFrame}
+          maxFrames={playback.maxFrames}
+          setSearchFrame={playback.setSearchFrame}
+        />
       </div>
     </main>
   );
