@@ -55,16 +55,17 @@ function drawAgent(ctx: CanvasRenderingContext2D, pos: Position, fill: string, s
   ctx.fillText(label, x, y + 0.5);
 }
 
-function drawCandidateArrow(ctx: CanvasRenderingContext2D, origin: Position, action: string, chosen: boolean, cellSize: number) {
+function drawCandidateArrow(ctx: CanvasRenderingContext2D, origin: Position, action: string, chosen: boolean, cellSize: number, score = 0) {
   const delta = actionDelta[action] ?? [0, 0];
   const target = add(origin, delta);
   const x1 = origin[1] * cellSize + cellSize / 2;
   const y1 = origin[0] * cellSize + cellSize / 2;
   const x2 = target[1] * cellSize + cellSize / 2;
   const y2 = target[0] * cellSize + cellSize / 2;
-  ctx.strokeStyle = chosen ? colors.chosen : colors.candidate;
-  ctx.fillStyle = chosen ? colors.chosen : colors.candidate;
-  ctx.lineWidth = chosen ? 4 : 2;
+  const riskColor = score < 0 ? colors.pruned : colors.candidate;
+  ctx.strokeStyle = chosen ? colors.chosen : riskColor;
+  ctx.fillStyle = chosen ? colors.chosen : riskColor;
+  ctx.lineWidth = chosen ? 5 : Math.max(2, Math.min(5, 2 + Math.abs(score) / 80));
   ctx.beginPath();
   ctx.moveTo(x1, y1);
   ctx.lineTo(x2, y2);
@@ -111,19 +112,35 @@ export default function MapCanvas({ grid, width, height, step, trace, activeAgen
       }
     }
 
-    if (layers.deadEnds) trace.dead_end_cells?.forEach((cell) => drawCell(ctx, cell, colors.deadEnd, cellSize, 7));
-    if (layers.danger) trace.danger_cells?.forEach((cell) => drawCell(ctx, cell, colors.danger, cellSize, 4));
-    if (layers.floodFill) trace.flood_fill.safe_cells.slice(0, searchFrame + 1).forEach((cell) => drawCell(ctx, cell, colors.flood, cellSize, 5));
+    if (layers.deadEnds) trace.dead_end_analysis?.dead_end_cells?.forEach((cell) => drawCell(ctx, cell, colors.deadEnd, cellSize, 7));
+    if (layers.danger) trace.danger_map?.danger_cells?.forEach((cell) => drawCell(ctx, cell, colors.danger, cellSize, 4));
+    const floodCells = trace.flood_fill.expansion_order?.length ? trace.flood_fill.expansion_order : trace.flood_fill.safe_cells;
+    if (layers.floodFill) floodCells.slice(0, searchFrame + 1).forEach((cell) => drawCell(ctx, cell, colors.flood, cellSize, 5));
     if (layers.frontier) trace.bfs.frontier_snapshots[Math.min(searchFrame, trace.bfs.frontier_snapshots.length - 1)]?.forEach((cell) => drawCell(ctx, cell, colors.frontier, cellSize, 6));
     if (layers.bfs) trace.bfs.explored_order.slice(0, searchFrame + 1).forEach((cell) => drawCell(ctx, cell, colors.bfs, cellSize, 6));
-    if (layers.astarOpen) trace.astar.open_set.slice(0, searchFrame + 1).forEach((cell) => drawCell(ctx, cell, colors.astarOpen, cellSize, 5));
-    if (layers.astarClosed) trace.astar.closed_set.slice(0, searchFrame + 1).forEach((cell) => drawCell(ctx, cell, colors.astarClosed, cellSize, 6));
+    const astarFrame = trace.astar.frames?.[Math.min(searchFrame, Math.max(0, trace.astar.frames.length - 1))];
+    const astarOpen = astarFrame?.open_set ?? trace.astar.open_set;
+    const astarClosed = astarFrame?.closed_set ?? trace.astar.closed_set;
+    if (layers.astarOpen) astarOpen.forEach((cell) => drawCell(ctx, cell, colors.astarOpen, cellSize, 5));
+    if (layers.astarClosed) astarClosed.forEach((cell) => drawCell(ctx, cell, colors.astarClosed, cellSize, 6));
     if (layers.astarPath) drawPath(ctx, trace.astar.final_path, colors.finalPath, cellSize);
     if (layers.pruned) trace.minimax.pruned_branches.forEach((cell) => drawCell(ctx, cell, colors.pruned, cellSize, 8));
 
     if (layers.minimax) {
-      const origin = activeAgent === "hide" ? step.hide.position : step.seek.position;
-      trace.candidate_actions.forEach((action) => drawCandidateArrow(ctx, origin, action, action === trace.chosen_action, cellSize));
+      const origin = activeAgent === "seek" ? step.seek.position : step.hide.position;
+      const actions = Object.keys(trace.candidate_evaluation?.candidates ?? {}).length
+        ? Object.keys(trace.candidate_evaluation?.candidates ?? {})
+        : trace.candidate_actions;
+      actions.forEach((action) =>
+        drawCandidateArrow(
+          ctx,
+          origin,
+          action,
+          action === trace.chosen_action,
+          cellSize,
+          trace.candidate_evaluation?.candidates?.[action]?.total_score ?? trace.candidate_scores[action] ?? 0
+        )
+      );
     }
 
     drawAgent(ctx, step.hide.position, colors.pacman, "#fde68a", "P", cellSize);

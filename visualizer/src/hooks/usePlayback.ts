@@ -3,7 +3,8 @@ import type { Replay } from "../types/replay";
 import { maxSearchFrames } from "../utils/grid";
 import { normalizeTrace } from "../utils/traceParser";
 
-export type ActiveAgent = "hide" | "seek";
+export type ActiveAgent = "hide" | "seek" | "both";
+export type InspectorStep = "overview" | "bfs" | "astar" | "flood" | "danger" | "candidates" | "minimax";
 
 export interface LayerState {
   bfs: boolean;
@@ -37,14 +38,18 @@ export function usePlayback(replay: Replay | null) {
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [activeAgent, setActiveAgent] = useState<ActiveAgent>("hide");
+  const [activeInspector, setActiveInspector] = useState<InspectorStep>("overview");
   const [layers, setLayers] = useState<LayerState>(defaultLayers);
 
   const totalSteps = replay?.steps.length ?? 0;
   const step = replay?.steps[stepIndex] ?? null;
   const trace = useMemo(() => {
     if (!step) return null;
-    return normalizeTrace(step[activeAgent].trace, activeAgent === "hide" ? "Hide Agent" : "Seek Agent");
+    const selected = activeAgent === "both" ? "hide" : activeAgent;
+    return normalizeTrace(step[selected].trace, selected === "hide" ? "Hide Agent" : "Seek Agent");
   }, [step, activeAgent]);
+  const hideTrace = useMemo(() => (step ? normalizeTrace(step.hide.trace, "Hide Agent") : null), [step]);
+  const seekTrace = useMemo(() => (step ? normalizeTrace(step.seek.trace, "Seek Agent") : null), [step]);
   const maxFrames = trace ? maxSearchFrames(trace) : 1;
 
   useEffect(() => {
@@ -80,7 +85,22 @@ export function usePlayback(replay: Replay | null) {
   }
 
   function switchAgent() {
-    setActiveAgent((value) => (value === "hide" ? "seek" : "hide"));
+    setActiveAgent((value) => (value === "hide" ? "seek" : value === "seek" ? "both" : "hide"));
+  }
+
+  function allLayersOff() {
+    setLayers({
+      bfs: false,
+      frontier: false,
+      astarOpen: false,
+      astarClosed: false,
+      astarPath: false,
+      floodFill: false,
+      danger: false,
+      deadEnds: false,
+      minimax: false,
+      pruned: false
+    });
   }
 
   return {
@@ -94,10 +114,15 @@ export function usePlayback(replay: Replay | null) {
     setSpeed,
     activeAgent,
     setActiveAgent,
+    activeInspector,
+    setActiveInspector,
     layers,
     toggleLayer,
+    allLayersOff,
     step,
     trace,
+    hideTrace,
+    seekTrace,
     maxFrames,
     totalSteps,
     previousStep,
@@ -107,4 +132,3 @@ export function usePlayback(replay: Replay | null) {
     switchAgent
   };
 }
-

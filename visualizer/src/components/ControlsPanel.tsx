@@ -35,6 +35,7 @@ export default function ControlsPanel(props: ControlsPanelProps) {
       <select className="rounded-md border border-arena-line bg-arena-panel2 px-3 py-2" value={props.activeAgent} onChange={(event) => props.setActiveAgent(event.target.value as ActiveAgent)}>
         <option value="hide">Hide trace</option>
         <option value="seek">Seek trace</option>
+        <option value="both">Side-by-side</option>
       </select>
       <label className="flex items-center gap-2 text-sm text-arena-muted">
         Speed
@@ -44,4 +45,3 @@ export default function ControlsPanel(props: ControlsPanelProps) {
     </div>
   );
 }
-
