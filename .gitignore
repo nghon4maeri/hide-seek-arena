@@ -1,0 +1,44 @@
+## Python
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+venv/
+
+## VS Code
+.vscode/
+
+## JetBrains
+.idea/
+
+## Replay files
+replays/
+*.replay.json
+
+## Generated submission
+submission/
+*.zip
+
+## Visualizer build artifacts
+visualizer/node_modules/
+visualizer/dist/
+
+## Vite
+*.tsbuildinfo
+
+## Logs
+*.log
+
+## OS files
+.DS_Store
+Thumbs.db
+
+## Testing
+.pytest_cache/
+.coverage
+
+## Misc
+.env
