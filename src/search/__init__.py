@@ -1,0 +1,2 @@
+"""Reusable classical search algorithms."""
+
