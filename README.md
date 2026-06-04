@@ -215,20 +215,6 @@ Hide and Seek form a two-player zero-sum adversarial problem. Hide maximizes
 survival utility. Seek minimizes Hide's advantage and maximizes capture
 potential.
 
-Minimax tree illustration:
-
-```text
-                    Current State
-                         |
-                 Hide chooses action
-          /              |              \
-       UP              RIGHT           STAY
-       |                 |               |
-  Seek response     Seek response   Seek response
-   /     \            /     \          /     \
- eval   eval       eval   eval     eval   eval
-```
-
 The implementation uses depth-limited minimax because the one-second action
 limit prevents exhaustive search to the end of the game.
 
