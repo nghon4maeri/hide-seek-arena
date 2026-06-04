@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import type { Replay } from "../types/replay";
+import type { ReplayLog } from "../types/replay";
 
-export function useReplay(url = "/sample_replay.json") {
-  const [replay, setReplay] = useState<Replay | null>(null);
+export function useReplay(url = "/match_log.json") {
+  const [replay, setReplay] = useState<ReplayLog | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -12,7 +12,7 @@ export function useReplay(url = "/sample_replay.json") {
         if (!response.ok) throw new Error(`Failed to load ${url}: ${response.status}`);
         return response.json();
       })
-      .then((data) => {
+      .then((data: ReplayLog) => {
         if (!cancelled) setReplay(data);
       })
       .catch((err: Error) => {
@@ -25,4 +25,3 @@ export function useReplay(url = "/sample_replay.json") {
 
   return { replay, error };
 }
-

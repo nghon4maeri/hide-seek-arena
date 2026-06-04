@@ -42,16 +42,28 @@ class HideAgent(BaseAgent):
         ghost_dist = search.bfs_distance_map(state.enemy_position)
         candidate_scores: Dict[str, float] = {}
 
-        def ordered_key(action: Action) -> Tuple[float, str]:
+        action_order = {action.name: index for index, action in enumerate(actions)}
+
+        def tie_key(action: Action, score: float) -> Tuple[float, int, int, int, int]:
+            p = search.step(state.my_position, action)
+            distance = search.distance(p, state.enemy_position)
+            safe_area = search.safe_reachable_area(p, state.enemy_position, max_depth=12, ghost_speed=self.ghost_speed)
+            non_stay = 0 if action.name == "STAY" else 1
+            return (score, distance, safe_area, non_stay, -action_order[action.name])
+
+        def ordered_key(action: Action) -> Tuple[float, int, int, int, int]:
             p = search.step(state.my_position, action)
             score = self._hide_eval(search, p, state.enemy_position, state.step_number + 1)
             candidate_scores[action.name] = score
-            return -score, action.name
+            key = tie_key(action, score)
+            return -key[0], -key[1], -key[2], -key[3], -key[4]
 
         actions.sort(key=ordered_key)
         best = actions[0]
         best_score = -INF
+        best_key = tie_key(best, best_score)
         depth = 4 if len(actions) <= 3 else 3
+        stay_adjustment_enabled = self._has_safe_movement_option(search, state.my_position, state.enemy_position)
 
         for action in actions:
             p = search.step(state.my_position, action)
@@ -67,9 +79,12 @@ class HideAgent(BaseAgent):
                     INF,
                     state.step_number + 1,
                 )
+            score += self._movement_adjustment(search, state.my_position, state.enemy_position, action, stay_adjustment_enabled)
             candidate_scores[action.name] = score
-            if score > best_score:
+            current_key = tie_key(action, score)
+            if current_key > best_key:
                 best_score = score
+                best_key = current_key
                 best = action
             if self._time_left() < 0.04:
                 break
@@ -126,4 +141,28 @@ class HideAgent(BaseAgent):
 
     def _hide_eval(self, search: SearchToolkit, pacman, ghost, step: int) -> float:
         return evaluate_hide(search, pacman, ghost, step, ghost_speed=self.ghost_speed)
+
+    def _has_safe_movement_option(self, search: SearchToolkit, pacman, ghost) -> bool:
+        current_dist = search.distance(pacman, ghost)
+        dead_dist = search.distance_to_dead_end_map()
+        for action in search.legal_actions(pacman, include_stay=False):
+            nxt = search.step(pacman, action)
+            next_dist = search.distance(nxt, ghost)
+            enters_dead_end = dead_dist[nxt[0]][nxt[1]] <= 1
+            immediate_danger = search.bfs_distance_map(ghost)[nxt[0]][nxt[1]] < 2
+            if next_dist >= current_dist and not enters_dead_end and not immediate_danger:
+                return True
+        return False
+
+    def _movement_adjustment(self, search: SearchToolkit, pacman, ghost, action: Action, stay_adjustment_enabled: bool) -> float:
+        if action.name == "STAY":
+            return -65.0 if stay_adjustment_enabled else 0.0
+
+        nxt = search.step(pacman, action)
+        current_dist = search.distance(pacman, ghost)
+        next_dist = search.distance(nxt, ghost)
+        dead_dist = search.distance_to_dead_end_map()[nxt[0]][nxt[1]]
+        if next_dist < current_dist or dead_dist <= 1:
+            return 0.0
+        return 25.0
 

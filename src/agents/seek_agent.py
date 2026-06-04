@@ -42,6 +42,14 @@ class SeekAgent(BaseAgent):
         path = search.astar_path(state.my_position, state.enemy_position, astar_trace)
         pursuit_next = path[0] if path else None
         candidate_scores: Dict[str, float] = {}
+        action_order = {action.name: index for index, action in enumerate(actions)}
+
+        def tie_key(action: Action, score: float) -> Tuple[float, int, int, int, int]:
+            ghost = search.step(state.my_position, action)
+            distance = search.distance(ghost, state.enemy_position)
+            safe_area = search.reachable_area(ghost, max_depth=8)
+            non_stay = 0 if action.name == "STAY" else 1
+            return (score, -distance, safe_area, non_stay, -action_order[action.name])
 
         def ordered_key(action: Action) -> Tuple[float, str]:
             g = search.step(state.my_position, action)
@@ -51,6 +59,7 @@ class SeekAgent(BaseAgent):
         actions.sort(key=ordered_key)
         best = actions[0]
         best_score = -INF
+        best_key = tie_key(best, best_score)
         depth = 4 if len(actions) <= 3 else 3
 
         for action in actions:
@@ -65,8 +74,10 @@ class SeekAgent(BaseAgent):
                 state.step_number + 1,
             )
             candidate_scores[action.name] = score
-            if score > best_score:
+            current_key = tie_key(action, score)
+            if current_key > best_key:
                 best_score = score
+                best_key = current_key
                 best = action
             if self._time_left() < 0.04:
                 break

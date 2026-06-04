@@ -248,83 +248,7 @@ heuristically so strong branches are considered first.
 
 ---
 
-## 4. System Architecture
-
-Project tree:
-
-```bash
-hide-seek-arena/
-  agent.py
-  requirements.txt
-  README.md
-  src/
-    agents/
-      base_agent.py
-      hide_agent.py
-      seek_agent.py
-    core/
-      constants.py
-      game_state.py
-      map_utils.py
-      movement.py
-      simulator.py
-      types.py
-    search/
-      bfs.py
-      astar.py
-      flood_fill.py
-      minimax.py
-      alpha_beta.py
-    evaluation/
-      features.py
-      hide_eval.py
-      seek_eval.py
-    debug/
-      trace.py
-      logger.py
-    ui/
-      visualizer.py
-      replay_viewer.py
-  scripts/
-    run_smoke_test.py
-    generate_replay.py
-    export_submission.py
-  visualizer/
-    src/
-    public/
-  docs/
-  tests/
-```
-
-Directory purposes:
-
-- `agents/`: role-specific Hide and Seek policies.
-- `search/`: reusable BFS, A*, flood fill, minimax, and alpha-beta utilities.
-- `evaluation/`: heuristic features and scoring functions.
-- `core/`: state parsing, movement rules, constants, types, and simulator.
-- `debug/`: optional trace and JSON logging helpers.
-- `visualizer/`: TypeScript educational/debug frontend.
-
-System architecture diagram:
-
-```mermaid
-flowchart LR
-    Arena[Arena Interface] --> AgentPy[agent.py]
-    AgentPy --> Agents[src/agents]
-    Agents --> Core[src/core]
-    Agents --> Search[src/search]
-    Agents --> Eval[src/evaluation]
-    Search --> Core
-    Eval --> Search
-    Eval --> Core
-    Simulator[Local Simulator] --> Agents
-    Simulator --> Replay[Replay JSON]
-    Replay --> Visualizer[TypeScript Visualizer]
-```
-
----
-
-## 5. Agent Design
+## 4. Agent Design
 
 ### Hide Agent
 
@@ -374,33 +298,6 @@ flowchart TD
     P --> O[Return Action]
 ```
 
----
-
-## 6. TypeScript Visualizer
-
-The TypeScript visualizer is a local educational debugger. It is not part of the
-Moodle tournament submission.
-
-Frontend stack:
-
-- React.
-- TypeScript.
-- Vite.
-- Tailwind CSS.
-- Canvas map rendering.
-- React state hooks for replay control.
-
-Replay-driven architecture:
-
-1. Python simulator runs the actual Python agents.
-2. `scripts/generate_replay.py` writes replay JSON to
-   `visualizer/public/sample_replay.json`.
-3. The React frontend reads the JSON file.
-4. The browser visualizes search behavior without calling Python directly.
-
-The replay JSON includes the official map, parsed dimensions, initial positions,
-legend values, and step traces. All positions use `[row, col]`.
-
 Visualizer architecture:
 
 ```mermaid
@@ -419,12 +316,43 @@ UI panels:
 
 - Map Panel: grid, walls, Pacman, Ghost, paths, explored cells, danger cells,
   safe area, dead ends, and candidate arrows.
-- Side Panel: current step, selected agent, algorithm name, chosen action,
+- Algorithm Step Inspector: chronological reasoning pipeline with clickable
+  sections for legal moves, BFS, A*, flood fill, danger/dead-end analysis,
+  candidate evaluation, and minimax alpha-beta.
+- Score and Explanation Panel: current step, selected agent, algorithm name, chosen action,
   action scores, explanation text, and search-frame statistics.
 - Timeline Panel: game-step slider, previous/next controls, play/pause, speed,
   and search expansion frame slider.
 - Search Playback: frame-by-frame animation for BFS, A*, flood fill, and
   minimax candidates.
+
+How to interpret inspector panels:
+
+- BFS Inspector: queue/frontier growth, explored count, distance map size, and
+  final path.
+- A* Inspector: current node, open/closed sets, and tracked `g(n)`, `h(n)`, and
+  `f(n)` values.
+- Flood Fill Inspector: reachable and safe-area expansion counts.
+- Danger/Dead-End Inspector: danger heat, dead ends, corridors, and junction
+  cells.
+- Candidate Evaluation Inspector: feature and weighted-term breakdowns for every
+  action.
+- Minimax Viewer: root/action branches, leaf values, alpha/beta metadata,
+  pruning events, and the best action.
+
+Keyboard controls:
+
+- `SPACE`: play or pause game replay.
+- `LEFT` / `RIGHT`: previous or next game step.
+- `N` / `B`: next or previous search frame.
+- `TAB`: switch Hide, Seek, and side-by-side trace mode.
+- `1`: BFS.
+- `2`: A*.
+- `3`: Flood Fill.
+- `4`: Danger/Dead-End.
+- `5`: Candidate Scores.
+- `6`: Minimax Tree.
+- `0`: all layers off.
 
 Supported visualizations:
 
@@ -444,7 +372,7 @@ Screenshot placeholders:
 
 ---
 
-## 7. Running the Project
+## 5. Running the Project
 
 Run the Python smoke test:
 
@@ -456,6 +384,12 @@ Generate a replay for the TypeScript visualizer:
 
 ```bash
 python scripts/generate_replay.py
+```
+
+For the full AI Search Inspector replay:
+
+```bash
+python scripts/generate_replay.py --trace-level full
 ```
 
 Run the web visualizer:
@@ -472,77 +406,99 @@ Build the web visualizer:
 cd visualizer
 npm run build
 ```
-
 ---
 
-## 8. Exporting Moodle Submission
+## Replay Data Contract
 
-Create the Moodle-safe runtime package:
+The current TypeScript visualizer uses a stable replay-driven data contract.
+Python runs the simulator and writes JSON once after the episode ends. The
+browser only reads JSON; it never calls Python directly.
 
-```bash
-python scripts/export_submission.py
+Replay file:
+
+```text
+visualizer/public/match_log.json
 ```
 
-Exported tree:
+For compatibility, the same content is also copied to:
 
-```bash
-submission/
-  agent.py
-  src/
-    __init__.py
-    agents/
-      __init__.py
-      base_agent.py
-      hide_agent.py
-      seek_agent.py
-    core/
-      __init__.py
-      constants.py
-      game_state.py
-      map_utils.py
-      movement.py
-      types.py
-    search/
-      __init__.py
-      alpha_beta.py
-      astar.py
-      bfs.py
-      flood_fill.py
-      minimax.py
-    evaluation/
-      __init__.py
-      features.py
-      hide_eval.py
-      seek_eval.py
+```text
+visualizer/public/sample_replay.json
 ```
 
-The visualizer is excluded because it is a local debugging tool and not required
-by the Arena. Excluding it keeps the final submission small, Python-only, and
-focused on runtime-required files.
+Schema:
 
----
+```json
+{
+  "map": [[0, 1, 0]],
+  "width": 21,
+  "height": 22,
+  "initial": {
+    "pacman": [16, 10],
+    "ghost": [8, 10]
+  },
+  "steps": [
+    {
+      "stepNumber": 0,
+      "pacmanPos": [16, 10],
+      "ghostPos": [8, 10],
+      "pacmanAction": "STAY",
+      "ghostAction": "DOWN",
+      "manhattanDistance": 8,
+      "exploredNodes": [[16, 10], [16, 9]],
+      "predictedPath": [[16, 10], [15, 10]],
+      "score": 120.5,
+      "candidateScores": {
+        "UP": 82.5,
+        "DOWN": 51.0,
+        "LEFT": -20.0,
+        "RIGHT": 144.7,
+        "STAY": 10.2
+      },
+      "chosenAgent": "hide",
+      "algorithm": "BFS + Flood Fill + Minimax",
+      "explanation": "The selected action improves safety according to the search evaluation."
+    }
+  ]
+}
+```
 
-## 9. Future Improvements
+Coordinates are always `[row, col]`. The frontend reads `width` and `height`
+from JSON and does not hard-code the board size.
 
-Possible future work:
+## Visualizer
 
-- Deeper minimax search with stronger time management.
-- Better trap and corridor heuristics.
-- More explicit articulation-point and bottleneck detection.
-- Monte Carlo methods for stochastic extensions of the environment.
-- Expectiminimax if random or uncertain opponent behavior is introduced.
+The simplified visualizer contains:
 
-These are future directions only. The current Lab 1 implementation intentionally
-uses classical deterministic search methods.
+- `GameBoard`: official map, Pacman, Ghost, explored nodes, predicted path, and
+  grid lines.
+- `DashboardPanel`: current step, positions, Manhattan distance, algorithm,
+  score, chosen agent, and explanation.
+- `ScorePanel`: action-score table with best score highlighted green, worst
+  score highlighted red, and chosen action outlined.
+- `LayerToggles`: explored nodes, predicted path, candidate scores, and grid.
+- `ControlPanel`: play, pause, previous step, next step, restart, step slider,
+  and replay speed.
 
----
+Generate replay:
 
-## 10. References
+```bash
+python scripts/generate_replay.py --trace-level full
+```
 
-- Russell, S. and Norvig, P. Artificial Intelligence: A Modern Approach.
-- Introduction to Artificial Intelligence course slides.
-- Breadth-First Search.
-- Uniform Cost Search.
-- A* Search.
-- Minimax Search.
-- Alpha-Beta Pruning.
+Run UI:
+
+```bash
+cd visualizer
+npm install
+npm run dev
+```
+
+Keyboard controls:
+
+- `SPACE`: play or pause.
+- `LEFT`: previous step.
+- `RIGHT`: next step.
+- `R`: restart.
+- `E`: toggle explored nodes.
+- `P`: toggle predicted path.

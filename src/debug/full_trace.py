@@ -409,6 +409,8 @@ def build_full_trace(
 def explain_choice(agent_name: str, action: str, scores: Dict[str, float], candidates: Dict[str, Any]) -> str:
     if not action:
         return f"{agent_name} has no selected action."
+    if action == "STAY" and agent_name == "Hide Agent":
+        return "STAY was chosen because all movement options are more dangerous or reduce safe reachable area."
     ranked = candidates.get("ranked_actions") if candidates else None
     if ranked:
         rank = next((index + 1 for index, item in enumerate(ranked) if item[0] == action), 1)
