@@ -110,6 +110,87 @@ Utility commands for quick smoke testing, placeholder benchmarking, and export p
 5. The team runs smoke tests and benchmark checks.
 6. The leader exports `team_submission` for final packaging.
 
+## Example Workflow
+
+This example follows the testing style from `STUDENT_GUIDE.md`.
+
+### 1. Pacman/Seeker Development
+
+Student `24127561` develops Pacman capture logic in:
+
+```text
+submissions/24127561/agent.py
+```
+
+Test the Pacman/Seeker sandbox against the example Ghost/Hider:
+
+```bash
+cd pacman/src
+python arena.py --seek 24127561 --hide example_student --no-viz --max-steps 50
+```
+
+### 2. Ghost/Hider Development
+
+Student `24127192` develops Ghost evasion logic in:
+
+```text
+submissions/24127192/agent.py
+```
+
+Test the Ghost/Hider sandbox against the example Pacman/Seeker:
+
+```bash
+cd pacman/src
+python arena.py --seek example_student --hide 24127192 --no-viz --max-steps 50
+```
+
+### 3. Sandbox Match
+
+The leader tests both member sandboxes together:
+
+```bash
+cd pacman/src
+python arena.py --seek 24127561 --hide 24127192 --no-viz --max-steps 100
+```
+
+### 4. Merge Into Final Team Submission
+
+If both sandboxes remain compatible and the behavior is acceptable, `24127457`
+merges the selected logic into:
+
+```text
+submissions/team_submission/agent.py
+```
+
+### 5. Final Team Checks
+
+Run the final merged version in all important roles:
+
+```bash
+cd pacman/src
+python arena.py --seek team_submission --hide example_student --no-viz
+python arena.py --seek example_student --hide team_submission --no-viz
+python arena.py --seek team_submission --hide team_submission --no-viz
+```
+
+Then run workspace tests from the `pacman/` folder:
+
+```bash
+cd pacman
+python -m pytest tests
+```
+
+### 6. Export
+
+Only after review and tests, export the final folder:
+
+```bash
+python scripts/export_submission.py team_submission --force
+```
+
+The exported content should come from `submissions/team_submission/`, not from
+an individual member sandbox.
+
 ## Useful Commands
 
 Run a quick smoke test:
