@@ -1,8 +1,4 @@
-# GhostAgent (Hider) — Ghi Chú Phát Triển
-
-**Sinh viên:** 24127192  
-**Vai trò:** Ghost/Hider Engineer  
-**Ngày cập nhật:** 15/06/2026  
+# GhostAgent (Hider) — NOTES
 
 ---
 
