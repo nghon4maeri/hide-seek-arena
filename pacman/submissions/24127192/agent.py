@@ -219,10 +219,11 @@ class Topo:
                         break
                 if not found:
                     break
-            total = len(branch)
-            for i, cell in enumerate(branch):
-                self.deb.add(cell)
-                self.deb_d[cell] = total - i
+            if cur in self.jn:
+                total = len(branch)
+                for i, cell in enumerate(branch):
+                    self.deb.add(cell)
+                    self.deb_d[cell] = total - i
 
         # Hub connectivity scores
         for j in self.jn:
@@ -266,7 +267,7 @@ class GhostAgent(BaseGhostAgent):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._enemy: Optional[Tuple[int,int]] = None
-        self._hist: List[Tuple[int,int]] = []
+        self._hist = deque(maxlen=30)
         self._bfs = BFS()
         self._tp = Topo()
         self._nopen = 0
@@ -286,8 +287,6 @@ class GhostAgent(BaseGhostAgent):
             self._enemy = tuple(enemy_position)
 
         self._hist.append(me)
-        if len(self._hist) > 30:
-            self._hist = self._hist[-30:]
 
         cands = _legal(me, map_state)
         if not cands:
@@ -349,14 +348,16 @@ class GhostAgent(BaseGhostAgent):
         gd = self._bfs.dist(ms, gpos)
         bfs_d = pd.get(gpos, _manhattan(gpos, ppos))
         phase = 'early' if step < 40 else ('mid' if step < 130 else 'late')
+        
+        ft_dist = self._bfs.dist(ms, self._flee_target) if self._flee_target else {}
 
-        ordered = self._order(ms, gpos, ppos, cands, pd, gd, phase)
+        ordered = self._order(ms, gpos, ppos, cands, pd, phase, ft_dist)
         best = ordered[0]
 
         max_d = 6 if bfs_d <= 3 else (5 if bfs_d <= 6 else (4 if bfs_d <= 10 else 3))
 
         for depth in range(MIN_DEPTH, max_d + 1):
-            if time.time() - t0 > TIME_BUDGET * 0.5 and depth > MIN_DEPTH:
+            if time.time() - t0 > TIME_BUDGET * 0.75 and depth > MIN_DEPTH:
                 break
             a_val, b_val = float("-inf"), float("inf")
             cb, cv = ordered[0], float("-inf")
@@ -367,7 +368,7 @@ class GhostAgent(BaseGhostAgent):
                     v = -100000.0
                 else:
                     v = self._ab(ms, ng, ppos, depth - 1, False,
-                                 a_val, b_val, pd, step, phase, t0)
+                                 a_val, b_val, pd, ft_dist, step, phase, t0)
                 if v is None:
                     timeout = True
                     break
@@ -382,13 +383,13 @@ class GhostAgent(BaseGhostAgent):
     # ------------------------------------------------------------------
     # Alpha-Beta search
     # ------------------------------------------------------------------
-    def _ab(self, ms, gp, pp, depth, is_g, a, b, pd_orig, step, phase, t0):
+    def _ab(self, ms, gp, pp, depth, is_g, a, b, pd_orig, ft_dist, step, phase, t0):
         if time.time() - t0 > TIME_BUDGET:
             return None
         if _manhattan(gp, pp) < 2:
             return -100000.0
         if depth <= 0:
-            return self._eval(ms, gp, pp, pd_orig, step, phase)
+            return self._eval(ms, gp, pp, pd_orig, ft_dist, step, phase)
 
         if is_g:
             v = float("-inf")
@@ -397,7 +398,7 @@ class GhostAgent(BaseGhostAgent):
                 moves = [Move.STAY]
             for m in moves:
                 r = self._ab(ms, _apply(gp, m), pp, depth - 1, False,
-                             a, b, pd_orig, step, phase, t0)
+                             a, b, pd_orig, ft_dist, step, phase, t0)
                 if r is None:
                     return None
                 if r > v:
@@ -410,7 +411,7 @@ class GhostAgent(BaseGhostAgent):
             v = float("inf")
             for np_ in _pac_reach(pp, ms):
                 r = self._ab(ms, gp, np_, depth - 1, True,
-                             a, b, pd_orig, step, phase, t0)
+                             a, b, pd_orig, ft_dist, step, phase, t0)
                 if r is None:
                     return None
                 if r < v:
@@ -423,30 +424,22 @@ class GhostAgent(BaseGhostAgent):
     # ------------------------------------------------------------------
     # Evaluation function
     # ------------------------------------------------------------------
-    def _eval(self, ms, gp, pp, pd_orig, step, phase):
-        gd = self._bfs.dist(ms, gp)
-        pd = self._bfs.dist(ms, pp)
+    def _eval(self, ms, gp, pp, pd_orig, ft_dist, step, phase):
+        pd = pd_orig
 
         # 1. BFS distance from Pacman
         bfs_d = pd.get(gp, _manhattan(gp, pp) + 30)
 
-        # 2. Safe territory (speed-2 adjusted Voronoi)
-        safe_t = 0
-        for c, g_val in gd.items():
-            p_val = pd.get(c, 9999)
-            if g_val < (p_val + 1) // 2:
-                safe_t += 1
-
-        # 3. Mobility
+        # 2. Mobility
         mob = _flood(ms, gp, 8)
 
-        # 4. Branching factor
+        # 3. Branching factor
         branch = self._tp.br.get(gp, 0)
 
-        # 5. Dead-end penalty
+        # 4. Dead-end penalty
         de_pen = self._de_pen(gp, bfs_d, pd)
 
-        # 6. Corridor penalty
+        # 5. Corridor penalty
         co_pen = 0.0
         if gp in self._tp.co:
             if bfs_d <= 4:
@@ -454,55 +447,26 @@ class GhostAgent(BaseGhostAgent):
             elif bfs_d <= 8:
                 co_pen = 0.5
 
-        # 7. Oscillation penalty
-        osc = self._osc(gp)
-
-        # 8. Escape routes (speed-2 aware)
-        esc = 0
-        for m in MOVE_ORDER:
-            nxt = _apply(gp, m)
-            g_val = gd.get(nxt, 9999)
-            if g_val >= 9999:
-                continue
-            p_val = pd.get(nxt, 9999)
-            if g_val < (p_val + 1) // 2:
-                esc += 1
-
-        # 9. Junction proximity
+        # 6. Junction proximity
         j_bonus = max(0, 5 - self._tp.jd.get(gp, 10))
 
-        # 10. Hub connectivity in neighbourhood
-        hub = 0.0
-        for j, sc in self._tp.hub.items():
-            d = gd.get(j, 99)
-            if d <= 4:
-                hub += sc * (5 - d) / 5.0
-
-        # 11. Strategic target distance bonus
+        # 7. Strategic target distance bonus
         tgt_bonus = 0.0
-        if self._flee_target is not None:
-            td = gd.get(self._flee_target, 99)
+        if self._flee_target is not None and ft_dist:
+            td = ft_dist.get(gp, 99)
             if td < 99:
                 tgt_bonus = max(0, 15 - td)
-
-        # 12. Control ratio
-        ctrl = safe_t / max(1, self._nopen)
 
         # Weights
         w = self._w(phase, bfs_d)
         return (
             w['d'] * bfs_d
-            + w['s'] * safe_t
             + w['m'] * mob
             + w['b'] * branch
-            + w['e'] * esc
             + w['j'] * j_bonus
-            + w['h'] * hub
-            + w['c'] * ctrl * 100
-            + w['t'] * tgt_bonus
+            + w.get('t', 0) * tgt_bonus
             - w['de'] * de_pen
             - w['co'] * co_pen
-            - w['o'] * osc
         )
 
     def _de_pen(self, gp, bfs_d, pd):
@@ -550,11 +514,9 @@ class GhostAgent(BaseGhostAgent):
     # ------------------------------------------------------------------
     # Move ordering for alpha-beta
     # ------------------------------------------------------------------
-    def _order(self, ms, gp, pp, cands, pd, gd, phase):
+    def _order(self, ms, gp, pp, cands, pd, phase, ft_dist):
         """Sort moves by quick heuristic — best first for alpha-beta."""
         ft = self._flee_target
-        # Pre-compute BFS from flee target (cached) for cheap distance lookup
-        ft_dist = self._bfs.dist(ms, ft) if ft else {}
 
         def qs(m):
             nxt = _apply(gp, m)
@@ -563,8 +525,7 @@ class GhostAgent(BaseGhostAgent):
 
             # BFS distance from Pacman to next position
             d = pd.get(nxt, _manhattan(nxt, pp) + 30)
-            # Quick mobility estimate
-            mob = _flood(ms, nxt, 4)
+            
             # Branch factor
             br = self._tp.br.get(nxt, 0)
 
@@ -598,7 +559,7 @@ class GhostAgent(BaseGhostAgent):
                 if nxt_d < cur_d:
                     tgt = 15.0
 
-            return 15.0 * d + 2.0 * mob + 5.0 * br + de + co + osc + tgt
+            return 15.0 * d + 5.0 * br + de + co + osc + tgt
 
         return sorted(cands, key=qs, reverse=True)
 
@@ -611,12 +572,13 @@ class GhostAgent(BaseGhostAgent):
     def _osc(self, pos):
         if not self._hist:
             return 0.0
-        c = self._hist[-8:].count(pos)
+        hl = list(self._hist)
+        c = hl[-8:].count(pos)
         # Detect 2-cell oscillation
-        if len(self._hist) >= 4 and len(set(self._hist[-4:])) <= 2:
+        if len(hl) >= 4 and len(set(hl[-4:])) <= 2:
             c += 4
         # Detect 3-cell oscillation
-        if len(self._hist) >= 6 and len(set(self._hist[-6:])) <= 3:
+        if len(hl) >= 6 and len(set(hl[-6:])) <= 3:
             c += 2
         return float(c)
 
@@ -641,22 +603,9 @@ class PacmanAgent(BasePacmanAgent):
         if t is not None:
             path = _bfs_path(map_state, me, t)
             if path:
-                first = path[0]
-                desired = 0
-                for m in path:
-                    if m != first:
-                        break
-                    desired += 1
-                cur, valid = me, 0
-                for _ in range(min(self.pacman_speed, desired)):
-                    nxt = _apply(cur, first)
-                    if not _valid(nxt, map_state):
-                        break
-                    valid += 1
-                    cur = nxt
-                return (first, max(1, valid))
+                return path[0]
         cands = _legal(me, map_state)
         if not cands:
-            return (Move.STAY, 1)
-        return (max(cands, key=lambda m: (5.0 if _apply(me, m) not in self._vis else 0.0)
-                                         + _flood(map_state, _apply(me, m), 4)), 1)
+            return Move.STAY
+        return max(cands, key=lambda m: (5.0 if _apply(me, m) not in self._vis else 0.0)
+                                         + _flood(map_state, _apply(me, m), 4))
