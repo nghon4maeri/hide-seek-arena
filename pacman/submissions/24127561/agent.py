@@ -24,7 +24,6 @@ class PacmanAgent(BasePacmanAgent):
         )
 
         self.last_seen_enemy = None
-        self.previous_enemy = None
 
     def step(
         self,
@@ -66,18 +65,29 @@ class PacmanAgent(BasePacmanAgent):
             if target is None:
                 target = enemy_position
 
-            self.previous_enemy = self.last_seen_enemy
             self.last_seen_enemy = enemy_position
 
         else:
 
-            if self.last_seen_enemy is not None:
-                target = self.last_seen_enemy
-            else:
+            if self.last_seen_enemy is None:
                 return self._explore(
                     my_position,
                     map_state
                 )
+
+            if my_position == self.last_seen_enemy:
+
+                self.last_seen_enemy = None
+
+                return self._explore(
+                    my_position,
+                    map_state
+                )
+
+            target = self.last_seen_enemy
+
+        if my_position == target:
+            return (Move.STAY, 1)
 
         path = self._astar(
             map_state,
@@ -95,7 +105,7 @@ class PacmanAgent(BasePacmanAgent):
             path,
             my_position
         )
-    
+
     def _astar(
         self,
         map_state,
@@ -116,8 +126,13 @@ class PacmanAgent(BasePacmanAgent):
 
         heapq.heappush(
             open_set,
-            (0, start)
+            (
+                heuristic(start, goal),
+                start
+            )
         )
+
+        closed_set = set()
 
         came_from = {}
 
@@ -137,6 +152,11 @@ class PacmanAgent(BasePacmanAgent):
             _, current = heapq.heappop(
                 open_set
             )
+
+            if current in closed_set:
+                continue
+
+            closed_set.add(current)
 
             if current == goal:
 
@@ -219,7 +239,6 @@ class PacmanAgent(BasePacmanAgent):
             return (Move.STAY, 1)
 
         steps = 1
-
         current = first
 
         for next_cell in path[1:]:
@@ -264,17 +283,30 @@ class PacmanAgent(BasePacmanAgent):
 
             dr, dc = move.value
 
-            nr = my_position[0] + dr
-            nc = my_position[1] + dc
+            steps = 0
+            r, c = my_position
 
-            if (
-                0 <= nr < rows
-                and 0 <= nc < cols
-                and map_state[nr][nc] == 0
-            ):
+            for _ in range(self.pacman_speed):
+
+                nr = r + dr
+                nc = c + dc
+
+                if not (
+                    0 <= nr < rows
+                    and 0 <= nc < cols
+                ):
+                    break
+
+                if map_state[nr][nc] != 0:
+                    break
+
+                steps += 1
+                r, c = nr, nc
+
+            if steps > 0:
                 return (
                     move,
-                    1
+                    steps
                 )
 
         return (
@@ -284,9 +316,6 @@ class PacmanAgent(BasePacmanAgent):
 
 
 class GhostAgent(BaseGhostAgent):
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
 
     def step(
         self,
