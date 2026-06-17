@@ -1,241 +1,319 @@
-# CSC14003 Hide and Seek Arena - Pacman Team Workspace
+# Pacman vs Ghost Arena — Lab 1: Hide and Seek Arena
 
-This folder is the team workspace for CSC14003 Introduction to Artificial Intelligence Lab 1: Hide and Seek Arena.
+Môn học: **CSC14003 — Nhập môn Trí tuệ Nhân tạo**
 
-The goal of this workspace is to keep student work organized while preserving the official arena framework and submission interface.
+---
 
-## Important Rules
+## 1. Tổng quan Dự án
 
-- Work inside `pacman/` only.
-- Do not modify `src/` framework logic unless the team has an explicit reviewed task for it.
-- Do not change the official agent interface.
-- Do not touch frontend, visualizer, or TypeScript backend folders outside this workspace.
-- Keep final submission code in `submissions/team_submission/`.
+Đây là không gian làm việc chính (`pacman/`) của bài tập lớn **Hide and Seek Arena** — một trò chơi đối kháng hai người trên bản đồ lưới Pacman cổ điển. Hai agent AI tranh đấu trong môi trường **thông tin hoàn chỉnh (Perfect Information)** với mục tiêu đối lập: một bên săn đuổi, một bên lẩn trốn.
 
-## Official Interface
+### 1.1. Vai trò Agent
 
-Each submission folder must contain an `agent.py` file defining:
+| Vai trò | Agent | Nhiệm vụ | Điều kiện thắng |
+|---------|-------|----------|-----------------|
+| **Seeker** (Người đi săn) | **PacmanAgent** | Đuổi bắt Ghost | Khoảng cách Manhattan `< 2` |
+| **Hider** (Người đi trốn) | **GhostAgent** | Sinh tồn đến hết trận | Sống sót qua `max_steps` (200 bước) |
 
-```python
-PacmanAgent.step(map_state, my_position, enemy_position, step_number)
-GhostAgent.step(map_state, my_position, enemy_position, step_number)
-```
+### 1.2. Đặc tả Kỹ thuật
 
-Return rules:
+| Thành phần | Mô tả |
+|------------|-------|
+| **Bản đồ** | Lưới 21×21. `0` = đường trống, `1` = tường. Map cố định dạng Pacman cổ điển |
+| **Chế độ quan sát** | Fog-of-war **TẮT**. Hai agent luôn nhìn thấy vị trí của nhau (Perfect Information) |
+| **Cơ chế di chuyển** | **Đồng thời (Simultaneous)** — cả hai nhận state, quyết định, rồi cùng cập nhật vị trí trong 1 step. Không ai thấy nước đi của đối phương trước khi chọn |
 
-- `PacmanAgent` may return `Move` or `(Move, steps)`.
-- `GhostAgent` must return `Move` only.
-- Valid moves are `Move.UP`, `Move.DOWN`, `Move.LEFT`, `Move.RIGHT`, and `Move.STAY`.
+### 1.3. Khác biệt Tốc độ
 
-## Team Roles
+| | Pacman (Seeker) | Ghost (Hider) |
+|---|---|---|
+| **Số ô / step** | 1 ô, hoặc nhiều ô thẳng (`pacman_speed`, mặc định = 2) | **1 ô duy nhất** |
+| **Hành động trả về** | `Move` hoặc `(Move, steps)` | **Chỉ** `Move` |
+| **Ràng buộc** | `1 ≤ steps ≤ pacman_speed`; chỉ đi thẳng, dừng nếu gặp tường | Không được rẽ góc chữ L trong 1 lượt. Trả về tuple hoặc string sẽ bị xử **thua ngay lập tức** |
 
-| Student ID | Role | Workspace |
-| --- | --- | --- |
-| 24127457 | Leader / Integration / Benchmark / Final Submission | `submissions/24127457/` and `submissions/team_submission/` |
-| 24127192 | Ghost/Hider Engineer | `submissions/24127192/` |
-| 24127561 | Pacman/Seeker Engineer | `submissions/24127561/` |
+---
 
-## Workspace Structure
+## 2. Cấu trúc Thư mục
 
 ```text
 pacman/
-|-- README.md
-|-- STUDENT_GUIDE.md
-|-- docs/
-|   |-- architecture.md
-|   |-- algorithm_summary.md
-|   |-- benchmark_report.md
-|   |-- contribution_log.md
-|   `-- workspace_guide.md
-|-- scripts/
-|   |-- benchmark_agents.py
-|   |-- run_smoke_test.py
-|   `-- export_submission.py
-|-- src/
-|   |-- arena.py
-|   |-- environment.py
-|   |-- agent_loader.py
-|   `-- agent_interface.py
-|-- submissions/
-|   |-- 24127457/        # leader sandbox
-|   |-- 24127192/        # Ghost/Hider sandbox
-|   |-- 24127561/        # Pacman/Seeker sandbox
-|   `-- team_submission/ # final merged version
-`-- tests/
-    |-- test_workspace_structure.py
-    |-- test_submission_interface.py
-    `-- test_runtime_smoke.py
+├── src/                          # Framework lõi — NGHIÊM CẤM CHỈNH SỬA
+│   ├── arena.py                  # Điều phối trận đấu, vòng lặp game
+│   ├── environment.py            # Bản đồ, luật di chuyển, điều kiện thắng, observation
+│   ├── agent_interface.py        # Base class: PacmanAgent, GhostAgent
+│   ├── agent_loader.py           # Dynamic import + validate agent
+│   └── visualizer.py             # Hiển thị trận đấu trên terminal
+│
+├── submissions/                  # Khu vực code của nhóm
+│   ├── 24127561/agent.py         # Kỹ sư Pacman (Seeker)
+│   ├── 24127192/agent.py         # Kỹ sư Ghost (Hider)
+│   ├── 24127457/agent.py         # Sandbox của Leader (tích hợp & review)
+│   ├── team_submission/agent.py  # Bản merge cuối cùng — DÙNG ĐỂ NỘP BÀI
+│   ├── example_student/          # Agent mẫu cơ bản của giảng viên
+│   ├── simple_agent/             # Agent random đơn giản (baseline)
+│   ├── TEMPLATE_agent.py         # Template khởi tạo cho sinh viên
+│   ├── broken_agent/             # Agent test lỗi runtime
+│   ├── slow_agent/               # Agent test timeout
+│   └── exit_test/                # Agent test sys.exit()
+│
+├── scripts/                      # Công cụ đánh giá & đóng gói
+│   ├── benchmark_agents.py       # Chạy nhiều trận đấu, thống kê kết quả
+│   ├── run_smoke_test.py         # Smoke test nhanh (5 step, no-viz)
+│   └── export_submission.py      # Đóng gói bài nộp
+│
+├── tests/                        # Bộ test kiểm tra runtime
+│   ├── test_submission_interface.py  # Kiểm tra interface hợp lệ
+│   ├── test_workspace_structure.py   # Kiểm tra cấu trúc thư mục
+│   └── test_runtime_smoke.py         # Kiểm tra chạy không crash
+│
+├── docs/                         # Tài liệu nội bộ nhóm
+└── README.md                     # File này
 ```
 
-## Folder Responsibilities
+### 2.1. Quy tắc Phân quyền
 
-### `src/`
+| Khu vực | Ai được sửa | Ghi chú |
+|---------|------------|---------|
+| `src/` | **Không ai** | Framework của giảng viên |
+| `submissions/24127561/` | Kỹ sư Pacman | Phát triển thuật toán săn đuổi |
+| `submissions/24127192/` | Kỹ sư Ghost | Phát triển thuật toán lẩn trốn |
+| `submissions/24127457/` | Leader | Sandbox tích hợp, test chéo |
+| `submissions/team_submission/` | **Leader** (sau review) | Bản merge cuối cùng để nộp |
+| `scripts/`, `tests/`, `docs/` | Cả nhóm | Cập nhật khi cần |
 
-Arena framework code. Treat this as instructor/framework code. Workspace setup and agent development should not change this folder.
+---
 
-### `submissions/24127457/`
+## 3. Định nghĩa Hàm `step()`
 
-Leader sandbox for integration experiments, benchmark checks, export validation, and final merge decisions.
+Đây là hàm **duy nhất** mà Framework gọi mỗi step. Cả hai agent phải implement đúng signature này.
 
-### `submissions/24127192/`
+### 3.1. Signature
 
-Ghost/Hider sandbox. This member should develop evasion strategy, survival logic, dead-end avoidance, and hider heuristics here first.
+```python
+def step(self, map_state, my_position, enemy_position, step_number):
+```
 
-### `submissions/24127561/`
+### 3.2. Mô tả Tham số
 
-Pacman/Seeker sandbox. This member should develop capture strategy, pathfinding, target pursuit, and seeker heuristics here first.
+| Tham số | Kiểu dữ liệu | Mô tả |
+|---------|-------------|-------|
+| `map_state` | `numpy.ndarray` (2D, shape: `21×21`) | Bản đồ toàn cục. `0` = đường trống, `1` = tường |
+| `my_position` | `tuple` — `(row: int, col: int)` | Vị trí hiện tại của agent trong hệ tọa độ tuyệt đối |
+| `enemy_position` | `tuple` — `(row: int, col: int)` | Vị trí đối thủ. **Luôn có giá trị** (Perfect Information) |
+| `step_number` | `int` | Step hiện tại của game, **bắt đầu từ 1** |
 
-### `submissions/team_submission/`
+> **Ghi chú:** Không có object `state` hay `percept` nào được gói lại. Framework truyền 4 tham số riêng biệt trực tiếp vào `step()`.
 
-Final merged team version. This is the only folder intended for final packaging. The leader controls merges into this folder.
+### 3.3. Giá trị Trả về
 
-### `docs/`
+**PacmanAgent** — có 2 lựa chọn:
 
-Documentation for architecture, algorithms, benchmark notes, contribution ownership, and workspace workflow.
+```python
+# Cách 1: Trả về Move enum (tương đương steps = 1)
+return Move.UP
+return Move.DOWN
+return Move.LEFT
+return Move.RIGHT
+return Move.STAY
 
-### `tests/`
+# Cách 2: Trả về tuple (Move, steps) để di chuyển nhiều ô thẳng
+return (Move.UP, 2)       # Đi lên 2 ô
+return (Move.RIGHT, 3)    # Đi phải 3 ô (nếu pacman_speed >= 3)
 
-Lightweight tests that check folder structure, import compatibility, and smoke-test runtime behavior.
+# Ràng buộc: 1 <= steps <= self.pacman_speed
+# Pacman đi thẳng từng ô, dừng nếu gặp tường
+```
 
-### `scripts/`
+**GhostAgent** — **CHỈ** được trả về `Move` enum:
 
-Utility commands for quick smoke testing, placeholder benchmarking, and export packaging.
+```python
+return Move.UP
+return Move.DOWN
+return Move.LEFT
+return Move.RIGHT
+return Move.STAY
 
-## Workflow
+return (Move.UP, 2)    # Tuple → AgentLoadError
+return "UP"             # String → AgentLoadError
+return (-1, 0)          # Tọa độ → AgentLoadError
+return None             # None → AgentLoadError
+```
 
-1. Each member develops only in their assigned submission folder.
-2. The member runs basic checks before asking for review.
-3. The leader reviews interface compatibility and behavior.
-4. Approved logic is copied or merged into `submissions/team_submission/`.
-5. The team runs smoke tests and benchmark checks.
-6. The leader exports `team_submission` for final packaging.
+### 3.4. Code Mẫu Tối thiểu
 
-## Example Workflow
+```python
+import sys
+from pathlib import Path
 
-This example follows the testing style from `STUDENT_GUIDE.md`.
+SRC_PATH = Path(__file__).resolve().parents[2] / "src"
+if str(SRC_PATH) not in sys.path:
+    sys.path.insert(0, str(SRC_PATH))
 
-### 1. Pacman/Seeker Development
+from agent_interface import PacmanAgent as BasePacmanAgent
+from agent_interface import GhostAgent as BaseGhostAgent
+from environment import Move
 
-Student `24127561` develops Pacman capture logic in:
+
+class PacmanAgent(BasePacmanAgent):
+    """Pacman Seeker — thuật toán săn đuổi."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.pacman_speed = max(1, int(kwargs.get("pacman_speed", 1)))
+        self.last_seen_enemy = None
+
+    def step(self, map_state, my_position, enemy_position, step_number):
+        # enemy_position luôn có giá trị (Perfect Information)
+        my_position = tuple(my_position)
+        enemy_position = tuple(enemy_position)
+
+        # → Cài đặt thuật toán tìm đường (A*, BFS, Minimax...) tại đây
+
+        return Move.STAY  # hoặc (Move.UP, 2)
+
+
+class GhostAgent(BaseGhostAgent):
+    """Ghost Hider — thuật toán lẩn trốn."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    def step(self, map_state, my_position, enemy_position, step_number):
+        my_position = tuple(my_position)
+        enemy_position = tuple(enemy_position)
+
+        # → Cài đặt thuật toán sinh tồn (BFS, Minimax, Flood Fill...) tại đây
+
+        return Move.STAY  # CHỈ return Move enum, không return tuple
+```
+
+---
+
+## 4. Hướng dẫn Chạy & Đánh giá
+
+Tất cả lệnh bên dưới được chạy từ **thư mục gốc của project** (`hide-seek-arena/`).
+
+### 4.1. Đấu thử giữa hai agent trong nhóm
+
+```bash
+# Pacman (24127561) vs Ghost (24127192) — 10 trận
+python pacman/scripts/benchmark_agents.py --seek 24127561 --hide 24127192 --games 10
+
+# Chạy 1 trận có hiển thị trực quan (terminal visualization)
+python pacman/src/arena.py --seek 24127561 --hide 24127192
+```
+
+### 4.2. Test Pacman với Ghost baseline của giảng viên
+
+```bash
+# Pacman nhóm vs Ghost mẫu — 5 trận
+python pacman/scripts/benchmark_agents.py --seek 24127561 --hide simple_agent --games 5
+
+# Chạy nhanh không hiển thị, giới hạn 50 step
+python pacman/src/arena.py --seek 24127561 --hide simple_agent --no-viz --max-steps 50
+```
+
+### 4.3. Test Ghost với Pacman baseline của giảng viên
+
+```bash
+# Ghost nhóm vs Pacman mẫu — 5 trận
+python pacman/scripts/benchmark_agents.py --seek simple_agent --hide 24127192 --games 5
+
+# Chạy nhanh không hiển thị, giới hạn 50 step
+python pacman/src/arena.py --seek simple_agent --hide 24127192 --no-viz --max-steps 50
+```
+
+### 4.4. Test bản merge cuối cùng (`team_submission`)
+
+```bash
+# Team submission làm Pacman vs Ghost mẫu
+python pacman/src/arena.py --seek team_submission --hide example_student --no-viz
+
+# Team submission làm Ghost vs Pacman mẫu
+python pacman/src/arena.py --seek example_student --hide team_submission --no-viz
+
+# Team submission đấu với chính nó
+python pacman/src/arena.py --seek team_submission --hide team_submission --no-viz
+```
+
+### 4.5. Smoke Test & Unit Test
+
+```bash
+# Smoke test nhanh (5 step, kiểm tra không crash)
+python pacman/scripts/run_smoke_test.py
+
+# Chạy toàn bộ test suite
+python -m pytest pacman/tests
+
+# Chạy test cụ thể
+python -m pytest pacman/tests/test_submission_interface.py -v
+```
+
+### 4.6. Các Tùy chọn Nâng cao
+
+```bash
+# Điều chỉnh tốc độ Pacman (mặc định: 2)
+python pacman/src/arena.py --seek 24127561 --hide 24127192 --pacman-speed 3
+
+# Điều chỉnh ngưỡng bắt (mặc định: 2, tức là Manhattan < 2)
+python pacman/src/arena.py --seek 24127561 --hide 24127192 --capture-distance 3
+
+# Giới hạn thời gian mỗi step (mặc định: 1.0s)
+python pacman/src/arena.py --seek 24127561 --hide 24127192 --step-timeout 1.0
+
+# Giảm thời gian trực quan hóa (xem chậm để debug)
+python pacman/src/arena.py --seek 24127561 --hide 24127192 --delay 0.5
+
+# Chế độ khởi đầu ngẫu nhiên
+python pacman/src/arena.py --seek 24127561 --hide 24127192 --start-mode stochastic
+```
+
+---
+
+## 5. Ràng buộc Kỹ thuật Khi Nộp Bài
+
+### 5.1. Giới hạn Hệ thống
+
+| Ràng buộc | Giá trị | Ghi chú |
+|-----------|--------|---------|
+| **Thời gian / step** | Tối đa **1.0 giây** | Vượt quá → agent bị xử thua (AgentTimeoutError) |
+| **Bộ nhớ (RAM)** | Tối đa **128 MB** | Tiêu chuẩn Google Colab CPU-only |
+| **Thư viện hợp lệ** | `numpy`, `pandas`, `scipy`, `gurobi` | Không dùng ML library (PyTorch, TF, sklearn...) |
+
+### 5.2. Yêu cầu File Nộp
+
+- **Chỉ nộp** nội dung trong `submissions/team_submission/`
+- File `agent.py` phải định nghĩa đúng 2 class: `PacmanAgent` và `GhostAgent`
+- Cả 2 class phải kế thừa từ `BasePacmanAgent` và `BaseGhostAgent` (trong `agent_interface.py`)
+- Hàm `step()` phải tuân thủ đúng signature 4 tham số
+- Không được import hoặc sửa các file trong `src/`
+
+### 5.3. Quy trình Làm việc Nhóm
 
 ```text
-submissions/24127561/agent.py
+1. 24127561 phát triển Pacman trong submissions/24127561/agent.py
+2. 24127192 phát triển Ghost  trong submissions/24127192/agent.py
+3. Leader (24127457) test chéo, review interface
+4. Leader merge code đã duyệt vào submissions/team_submission/agent.py
+5. Cả nhóm chạy smoke test + benchmark để xác nhận
+6. Leader export và nộp team_submission
 ```
 
-Test the Pacman/Seeker sandbox against the example Ghost/Hider:
+### 5.4. Đóng gói Bài Nộp
 
 ```bash
-cd pacman/src
-python arena.py --seek 24127561 --hide example_student --no-viz --max-steps 50
+python pacman/scripts/export_submission.py team_submission --force
 ```
 
-### 2. Ghost/Hider Development
+---
 
-Student `24127192` develops Ghost evasion logic in:
+## 6. Phụ lục: Các Thuật toán Gợi ý
 
-```text
-submissions/24127192/agent.py
-```
-
-Test the Ghost/Hider sandbox against the example Pacman/Seeker:
-
-```bash
-cd pacman/src
-python arena.py --seek example_student --hide 24127192 --no-viz --max-steps 50
-```
-
-### 3. Sandbox Match
-
-The leader tests both member sandboxes together:
-
-```bash
-cd pacman/src
-python arena.py --seek 24127561 --hide 24127192 --no-viz --max-steps 100
-```
-
-### 4. Merge Into Final Team Submission
-
-If both sandboxes remain compatible and the behavior is acceptable, `24127457`
-merges the selected logic into:
-
-```text
-submissions/team_submission/agent.py
-```
-
-### 5. Final Team Checks
-
-Run the final merged version in all important roles:
-
-```bash
-cd pacman/src
-python arena.py --seek team_submission --hide example_student --no-viz
-python arena.py --seek example_student --hide team_submission --no-viz
-python arena.py --seek team_submission --hide team_submission --no-viz
-```
-
-Then run workspace tests from the `pacman/` folder:
-
-```bash
-cd pacman
-python -m pytest tests
-```
-
-### 6. Export
-
-Only after review and tests, export the final folder:
-
-```bash
-python scripts/export_submission.py team_submission --force
-```
-
-The exported content should come from `submissions/team_submission/`, not from
-an individual member sandbox.
-
-## Useful Commands
-
-Run a quick smoke test:
-
-```bash
-python scripts/run_smoke_test.py
-```
-
-Run workspace tests:
-
-```bash
-python -m pytest tests
-```
-
-Run a short benchmark placeholder:
-
-```bash
-python scripts/benchmark_agents.py --seek team_submission --hide example_student --games 1 --max-steps 20
-```
-
-Export final team submission:
-
-```bash
-python scripts/export_submission.py team_submission --force
-```
-
-## Merge Rules
-
-- `24127192` proposes Ghost/Hider changes from `submissions/24127192/`.
-- `24127561` proposes Pacman/Seeker changes from `submissions/24127561/`.
-- `24127457` reviews and merges selected changes into `submissions/team_submission/`.
-- Any gameplay change should be followed by a benchmark note in `docs/benchmark_report.md`.
-
-## Ghost Movement Rule
-
-The lab rule says Ghost moves 2 cells per step in a straight line and cannot move L-shaped in one turn.
-
-This README documents the rule only. Do not change framework movement logic unless a future task explicitly requires it and tests are updated accordingly.
-
-## Final Submission Rule
-
-Submit only the reviewed contents of:
-
-```text
-submissions/team_submission/
-```
-
-Do not submit individual member sandboxes unless the leader explicitly decides to use one as the final version.
+| Thuật toán | Ứng dụng cho Pacman (Seeker) | Ứng dụng cho Ghost (Hider) |
+|------------|------------------------------|----------------------------|
+| **BFS** | Tìm đường ngắn nhất đến Ghost | Tính khoảng cách an toàn, phân tích vùng |
+| **A\*** | Đuổi bắt tối ưu với heuristic | Lập kế hoạch đường thoát |
+| **Flood Fill** | Phân tích áp lực bẫy | Ước lượng vùng an toàn, tránh ngõ cụt |
+| **Minimax** | Dự đoán phản ứng của Ghost | Dự đoán bước đuổi của Pacman |
+| **Alpha-Beta Pruning** | Cắt tỉa nhánh Minimax | Cắt tỉa nhánh Minimax |
+| **Adversarial Search** | Mô hình trò chơi đối kháng | Mô hình trò chơi đối kháng |
