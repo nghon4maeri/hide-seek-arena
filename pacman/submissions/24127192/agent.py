@@ -84,15 +84,23 @@ def _manhattan(a, b):
 # ===================================================================
 
 class BFS:
-    __slots__ = ('_c',)
-    def __init__(self):
+    __slots__ = ('_c', '_maxsize')
+    def __init__(self, maxsize=128):
         self._c: Dict[Tuple[int,int], Dict[Tuple[int,int],int]] = {}
+        self._maxsize = maxsize
 
     def dist(self, ms, s):
         if s in self._c:
-            return self._c[s]
+            # Move to end (most recently used) to act as LRU
+            d = self._c.pop(s)
+            self._c[s] = d
+            return d
         d = self._run(ms, s)
         self._c[s] = d
+        if len(self._c) > self._maxsize:
+            # Remove oldest (first item in dict)
+            oldest = next(iter(self._c))
+            del self._c[oldest]
         return d
 
     @staticmethod
@@ -113,6 +121,8 @@ class BFS:
 def _bfs_path(ms, s, g):
     if g is None or not _valid(s, ms) or not _valid(g, ms):
         return []
+    if s == g:
+        return [Move.STAY]
     parent = {s: (None, None)}
     q = deque([s])
     while q:
@@ -166,6 +176,7 @@ class Topo:
         self.deb_d: Dict[Tuple,int] = {}
         self.jd: Dict[Tuple,int] = {}
         self.hub: Dict[Tuple,float] = {}
+        self.adj: Dict[Tuple, List[Tuple[Move, Tuple]]] = {}
         self.ok = False
 
     def init(self, ms):
@@ -188,6 +199,14 @@ class Topo:
                         self.co.add(p)
                 if deg >= 3:
                     self.jn.add(p)
+
+                # Precompute valid moves
+                valid_moves = []
+                for m in MOVE_ORDER:
+                    nxt = _apply(p, m)
+                    if _valid(nxt, ms):
+                        valid_moves.append((m, nxt))
+                self.adj[p] = valid_moves
 
         # Multi-source BFS from junctions
         q = deque()
@@ -224,6 +243,10 @@ class Topo:
                 for i, cell in enumerate(branch):
                     self.deb.add(cell)
                     self.deb_d[cell] = total - i
+            else:
+                for cell in branch:
+                    self.deb.add(cell)
+                    self.deb_d[cell] = 999
 
         # Hub connectivity scores
         for j in self.jn:
@@ -286,7 +309,8 @@ class GhostAgent(BaseGhostAgent):
         if enemy_position is not None:
             self._enemy = tuple(enemy_position)
 
-        self._hist.append(me)
+        if not self._hist or self._hist[-1] != me:
+            self._hist.append(me)
 
         cands = _legal(me, map_state)
         if not cands:
@@ -301,9 +325,6 @@ class GhostAgent(BaseGhostAgent):
 
         return self._decide(map_state, me, pac, cands, step_number, t0)
 
-    # ------------------------------------------------------------------
-    # Strategic flee target: pick safest reachable hub far from Pacman
-    # ------------------------------------------------------------------
     def _update_flee_target(self, ms, me, pac):
         pd = self._bfs.dist(ms, pac)
         gd = self._bfs.dist(ms, me)
@@ -316,8 +337,9 @@ class GhostAgent(BaseGhostAgent):
             p_to_j = pd.get(j, 999)
             p_eff = (p_to_j + 1) // 2  # Pacman speed 2
 
-            # Ghost must arrive before Pacman
-            if g_to_j >= p_eff:
+            # Ghost must arrive safely before Pacman with a margin
+            # Since Pacman is speed 2, a 1-turn lead is unsafe at a junction
+            if g_to_j >= p_eff - 2:
                 continue
 
             hub_sc = self._tp.hub.get(j, 0)
@@ -352,9 +374,8 @@ class GhostAgent(BaseGhostAgent):
         ft_dist = self._bfs.dist(ms, self._flee_target) if self._flee_target else {}
 
         ordered = self._order(ms, gpos, ppos, cands, pd, phase, ft_dist)
-        best = ordered[0]
-
-        max_d = 6 if bfs_d <= 3 else (5 if bfs_d <= 6 else (4 if bfs_d <= 10 else 3))
+        # Restore fast max_d since heuristic prevents horizon traps
+        max_d = 8 if pd.get(gpos, 99) <= 3 else (7 if pd.get(gpos, 99) <= 6 else (6 if pd.get(gpos, 99) <= 10 else 5))
 
         for depth in range(MIN_DEPTH, max_d + 1):
             if time.time() - t0 > TIME_BUDGET * 0.75 and depth > MIN_DEPTH:
@@ -362,8 +383,17 @@ class GhostAgent(BaseGhostAgent):
             a_val, b_val = float("-inf"), float("inf")
             cb, cv = ordered[0], float("-inf")
             timeout = False
+            
+            # Precompute cand_nxt for the root node to avoid _apply
+            cand_nxt = {}
             for m in ordered:
-                ng = _apply(gpos, m)
+                for m_adj, nxt in self._tp.adj[gpos]:
+                    if m == m_adj:
+                        cand_nxt[m] = nxt
+                        break
+
+            for m in ordered:
+                ng = cand_nxt[m]
                 if _manhattan(ng, ppos) < 2:
                     v = -100000.0
                 else:
@@ -393,11 +423,9 @@ class GhostAgent(BaseGhostAgent):
 
         if is_g:
             v = float("-inf")
-            moves = _legal(gp, ms)
-            if not moves:
-                moves = [Move.STAY]
-            for m in moves:
-                r = self._ab(ms, _apply(gp, m), pp, depth - 1, False,
+            # Ghost moves 1 step, use precomputed adj
+            for _, ng in self._tp.adj[gp]:
+                r = self._ab(ms, ng, pp, depth - 1, False,
                              a, b, pd_orig, ft_dist, step, phase, t0)
                 if r is None:
                     return None
@@ -407,8 +435,9 @@ class GhostAgent(BaseGhostAgent):
                 if b <= a:
                     break
             return v
-        else:
+        if not is_g:
             v = float("inf")
+            # Pacman moves 2 steps, use _pac_reach
             for np_ in _pac_reach(pp, ms):
                 r = self._ab(ms, gp, np_, depth - 1, True,
                              a, b, pd_orig, ft_dist, step, phase, t0)
@@ -426,20 +455,33 @@ class GhostAgent(BaseGhostAgent):
     # ------------------------------------------------------------------
     def _eval(self, ms, gp, pp, pd_orig, ft_dist, step, phase):
         pd = pd_orig
+        gd = self._bfs.dist(ms, gp)
 
         # 1. BFS distance from Pacman
         bfs_d = pd.get(gp, _manhattan(gp, pp) + 30)
 
-        # 2. Mobility
-        mob = _flood(ms, gp, 8)
+        # 2. Safe territory (speed-2 adjusted Voronoi)
+        safe_t = 0
+        for c, g_val in gd.items():
+            p_val = pd.get(c, 9999)
+            if g_val < (p_val + 1) // 2:
+                safe_t += 1
 
-        # 3. Branching factor
+        # 3. Mobility
+        if not hasattr(self, '_flood_cache'):
+            self._flood_cache = {}
+        f_key = (gp, 8)
+        if f_key not in self._flood_cache:
+            self._flood_cache[f_key] = _flood(ms, gp, 8)
+        mob = self._flood_cache[f_key]
+
+        # 4. Branching factor
         branch = self._tp.br.get(gp, 0)
 
-        # 4. Dead-end penalty
+        # 5. Dead-end penalty
         de_pen = self._de_pen(gp, bfs_d, pd)
 
-        # 5. Corridor penalty
+        # 6. Corridor penalty
         co_pen = 0.0
         if gp in self._tp.co:
             if bfs_d <= 4:
@@ -447,57 +489,94 @@ class GhostAgent(BaseGhostAgent):
             elif bfs_d <= 8:
                 co_pen = 0.5
 
-        # 6. Junction proximity
+        # 7. Oscillation penalty
+        osc = self._osc(gp)
+
+        # 8. Escape routes (speed-2 aware)
+        esc = 0
+        for m in MOVE_ORDER:
+            nxt = _apply(gp, m)
+            g_val = gd.get(nxt, 9999)
+            if g_val >= 9999:
+                continue
+            p_val = pd.get(nxt, 9999)
+            if g_val < (p_val + 1) // 2:
+                esc += 1
+
+        # 9. Junction proximity
         j_bonus = max(0, 5 - self._tp.jd.get(gp, 10))
 
-        # 7. Strategic target distance bonus
+        # 10. Hub connectivity in neighbourhood
+        hub = 0.0
+        for j, sc in self._tp.hub.items():
+            d = gd.get(j, 99)
+            if d <= 4:
+                hub += sc * (5 - d) / 5.0
+
+        # 11. Strategic target distance bonus
         tgt_bonus = 0.0
         if self._flee_target is not None and ft_dist:
             td = ft_dist.get(gp, 99)
             if td < 99:
                 tgt_bonus = max(0, 15 - td)
 
+        # 12. Control ratio
+        ctrl = safe_t / max(1, self._nopen)
+
         # Weights
         w = self._w(phase, bfs_d)
         return (
             w['d'] * bfs_d
+            + w['s'] * safe_t
             + w['m'] * mob
             + w['b'] * branch
+            + w['e'] * esc
             + w['j'] * j_bonus
+            + w['h'] * hub
+            + w['c'] * ctrl
             + w.get('t', 0) * tgt_bonus
             - w['de'] * de_pen
             - w['co'] * co_pen
+            - w['o'] * osc
         )
 
     def _de_pen(self, gp, bfs_d, pd):
-        """Dead-end branch penalty."""
-        if gp not in self._tp.deb:
-            return 0.0
-        bd = self._tp.deb_d.get(gp, 0)
+        """Dead-end branch and corridor threat penalty."""
         jd_val = self._tp.jd.get(gp, 0)
         p_val = pd.get(gp, 99)
         p_eff = (p_val + 1) // 2
-        if p_eff <= jd_val + 1:
-            return 1.0
-        if bfs_d < bd + 3:
-            return 0.8
-        if bfs_d < bd + 6:
-            return 0.5
-        return 0.15
+
+        if gp in self._tp.deb:
+            bd = self._tp.deb_d.get(gp, 0)
+            if p_eff <= jd_val + 2:
+                return 100.0  # FATAL TRAP: severely penalize
+            elif bfs_d < bd + 3:
+                return 0.8
+            else:
+                return 0.5
+        
+        if gp in self._tp.co:
+            # If Pacman can outrun Ghost inside the corridor before junction
+            if p_val <= jd_val + 1:
+                return 50.0  # FATAL CORRIDOR
+            if p_val <= jd_val + 3:
+                return 0.8
+
+        return 0.0
 
     # ------------------------------------------------------------------
     # Phase weights
     # ------------------------------------------------------------------
     def _w(self, phase, bfs_d):
         if phase == 'early':
-            w = dict(d=15, s=3, m=2, b=5, e=10, j=5, h=3, c=6, t=10,
-                     de=70, co=30, o=12)
+            w = dict(d=15, s=0.1, m=2, b=5, e=1, j=5, h=0.2, c=1, t=10,
+                     de=80, co=30, o=1)
         elif phase == 'mid':
-            w = dict(d=12, s=4, m=2.5, b=5, e=12, j=6, h=4, c=8, t=7,
-                     de=80, co=35, o=15)
+            w = dict(d=12, s=0.2, m=2.5, b=5, e=1.5, j=6, h=0.3, c=1.5, t=7,
+                     de=90, co=35, o=1.5)
         else:
-            w = dict(d=10, s=5, m=3, b=6, e=15, j=7, h=5, c=10, t=5,
-                     de=90, co=40, o=18)
+            w = dict(d=10, s=0.3, m=3, b=6, e=2, j=7, h=0.5, c=2, t=5,
+                     de=100, co=40, o=2)
 
         if bfs_d <= 3:
             w['de'] *= 3
@@ -516,50 +595,29 @@ class GhostAgent(BaseGhostAgent):
     # ------------------------------------------------------------------
     def _order(self, ms, gp, pp, cands, pd, phase, ft_dist):
         """Sort moves by quick heuristic — best first for alpha-beta."""
-        ft = self._flee_target
+        # Retrieve precomputed next positions for candidates
+        cand_nxt = {}
+        for m in cands:
+            for m_adj, nxt in self._tp.adj[gp]:
+                if m == m_adj:
+                    cand_nxt[m] = nxt
+                    break
 
         def qs(m):
-            nxt = _apply(gp, m)
+            nxt = cand_nxt[m]
             if _manhattan(nxt, pp) < 2:
                 return -999999.0
 
             # BFS distance from Pacman to next position
             d = pd.get(nxt, _manhattan(nxt, pp) + 30)
             
-            # Branch factor
-            br = self._tp.br.get(nxt, 0)
-
-            # Dead-end penalty (very important)
-            de = 0.0
-            if nxt in self._tp.de:
-                de = -150.0
-            elif nxt in self._tp.deb:
-                bd = self._tp.deb_d.get(nxt, 0)
-                jd_val = self._tp.jd.get(nxt, 0)
-                pd_nxt = pd.get(nxt, 99)
-                pd_eff = (pd_nxt + 1) // 2
-                if pd_eff <= jd_val + 1:
-                    de = -200.0  # trap!
-                elif d < bd + 3:
-                    de = -120.0
-                else:
-                    de = -40.0
-
-            # Corridor penalty
-            co = -30.0 if (nxt in self._tp.co and d < 6) else 0.0
-
-            # Oscillation penalty
-            osc = -15.0 * self._osc(nxt)
-
-            # Flee target bonus (using pre-computed BFS from target)
-            tgt = 0.0
-            if ft and ft_dist:
-                cur_d = ft_dist.get(gp, 99)
-                nxt_d = ft_dist.get(nxt, 99)
-                if nxt_d < cur_d:
-                    tgt = 15.0
-
-            return 15.0 * d + 5.0 * br + de + co + osc + tgt
+            # Dead-end penalty
+            de = self._de_pen(nxt, d, pd)
+            
+            # Distance from flee target (if any)
+            td = ft_dist.get(nxt, 0) if ft_dist else 0
+            
+            return d * 100 - de * 500 - td
 
         return sorted(cands, key=qs, reverse=True)
 
