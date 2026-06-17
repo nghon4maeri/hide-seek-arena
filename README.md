@@ -1,490 +1,620 @@
-# Hide and Seek Arena - AI Search Agents
+# Pacman vs Ghost Arena
 
-## 1. Project Overview
-
-This project is Lab 1 of the Introduction to Artificial Intelligence course. It
-implements search-based agents for the Hide and Seek Arena, a deterministic
-two-player adversarial grid game.
-
-The two agents are:
-
-- Hide Agent (Pacman): tries to survive for as many steps as possible.
-- Seek Agent (Ghost): tries to catch Pacman as quickly as possible.
-
-The project focuses on classical AI search algorithms:
-
-- Blind search.
-- Heuristic search.
-- Local evaluation-based search.
-- Adversarial search.
-
-It does not use machine learning, reinforcement learning, neural networks, Monte
-Carlo Tree Search, or external AI frameworks.
-
-Project goals:
-
-- Build competitive tournament agents that obey the one-second action limit.
-- Demonstrate classical AI search methods in a practical adversarial setting.
-- Provide a clean Python submission package for Moodle.
-- Provide a TypeScript visualizer for local debugging and educational analysis.
+Welcome to the Pacman vs Ghost Arena! This guide will help you implement your own AI agents using search algorithms.
 
 ---
 
-## 2. Environment
+## Table of Contents
 
-The backend simulator and TypeScript visualizer use the official Arena map from
-the lab handout. The parsed handout text has 22 rows and 21 columns because the
-provided layout includes both top and bottom border rows. Coordinates are stored
-and displayed as `[row, col]`.
+1. [Quick Start](#quick-start)
+2. [Installation](#installation)
+3. [Understanding the Game](#understanding-the-game)
+4. [Creating Your Agent](#creating-your-agent)
+5. [Implementing Search Algorithms](#implementing-search-algorithms)
+6. [Testing Your Agent](#testing-your-agent)
+7. [Debugging Tips](#debugging-tips)
+8. [Common Errors](#common-errors)
+9. [Advanced Strategies](#advanced-strategies)
 
-Each cell is either a wall or a traversable cell:
+---
 
-- `0`: traversable cell.
-- `1`: wall.
+## Quick Start
 
-The game has full observability. Both agents receive the map, their own
-position, the enemy position, and the current step number. Actions are
-simultaneous, deterministic, and grid-based. Ghost has a speed advantage in the
-environment, so Pacman must avoid positions where escape routes collapse.
+### 1. Create Your Submission Folder
 
-Winning conditions:
+```bash
+cd submissions
+mkdir <your_student_id>
+```
 
-- Seek wins if `ManhattanDistance(Pacman, Ghost) < 2`.
-- Hide wins if Pacman survives until the maximum step limit.
+Replace `<your_student_id>` with your actual student ID (e.g., `student_001`, `alice`, `john_doe`)
 
-Official map illustration:
+### 2. Copy the Template
 
-```text
-#####################
-#.........#.........#
-#.###.###.#.###.###.#
-#.###.###.#.###.###.#
-#...................#
-#.###.#.#####.#.###.#
-#.....#...#...#.....#
-#####.###.#.###.#####
-#####.#...G...#.#####
-#####.#.##.##.#.#####
-#.......#...#.......#
-#####.#.#####.#.#####
-#####.#.......#.#####
-#####.#.#####.#.#####
-#.........#.........#
-#.###.###.#.###.###.#
-#...#.....P.....#...#
-###.#.#.#####.#.#.###
-#.....#...#...#.....#
-#.#######.#.#######.#
-#...................#
-#####################
+```bash
+cp TEMPLATE_agent.py <your_student_id>/agent.py
+```
 
-P = Hide Agent / Pacman
-G = Seek Agent / Ghost
-# = wall
-. = traversable cell
+### 3. Edit Your Agent
+
+Open `submissions/<your_student_id>/agent.py` in your favorite editor and implement your search algorithm.
+
+### 4. Test Your Agent
+
+```bash
+cd ../src
+python arena.py --seek <your_student_id> --hide example_student
 ```
 
 ---
 
-## 3. Search-Based Approaches
+## Installation
 
-### 3.1 Blind Search
+### Prerequisites
 
-#### Breadth-First Search (BFS)
+- **Python 3.7+** (Python 3.11 recommended)
+- **Conda** environment manager
+- **NumPy** library
 
-Breadth-First Search expands states in increasing depth order using a FIFO
-queue. On an unweighted graph, this means BFS finds the shortest path in number
-of actions.
+### Setup Steps
 
-Properties:
+```bash
+# 1. Activate conda environment
+conda activate ml
 
-- Complete on finite graphs.
-- Optimal on unweighted graphs.
-- Queue-based expansion.
-
-Used for:
-
-- Distance maps.
-- Reachability analysis.
-- Shortest-path computation.
-- Safety and mobility features.
-
-Complexity:
-
-- Time: `O(V + E)`
-- Space: `O(V)`
-
-In this project, `V <= 441` because the grid is 21x21, so BFS is small enough
-for repeated use when cached.
-
-#### Uniform Cost Search (UCS)
-
-Uniform Cost Search expands the lowest-cost frontier node first using a priority
-queue. It is optimal when step costs are non-negative.
-
-Because every legal movement in this grid has equal cost, BFS behaves
-equivalently to UCS in this project. BFS is therefore used as the simpler and
-faster implementation for exact shortest-path distances.
-
-#### Depth-First Search (DFS)
-
-Depth-First Search expands the deepest available node first using a stack or
-recursion. DFS is memory-efficient, but it is not optimal for shortest paths in
-general.
-
-DFS is included conceptually for comparison and educational purposes. It is not
-the primary strategy because the agents need accurate shortest-path distances
-and layered safety information.
-
-### 3.2 Heuristic Search
-
-#### Greedy Best-First Search
-
-Greedy Best-First Search selects nodes using only the heuristic value `h(n)`. It
-is fast because it focuses on states that appear promising, but it is not
-guaranteed to find an optimal path.
-
-In this project, greedy reasoning appears in action ordering. Candidate actions
-are first ranked by estimated safety or capture pressure before deeper
-adversarial search is applied.
-
-#### A* Search
-
-A* combines path cost and heuristic guidance:
-
-```text
-f(n) = g(n) + h(n)
+# 2. Install dependencies
+pip install -r requirements.txt
 ```
 
-Where:
+The `requirements.txt` contains:
+```text
+numpy>=1.20.0
+```
 
-- `g(n)`: path cost from the current position to node `n`.
-- `h(n)`: Manhattan distance estimate from `n` to the target.
+### Verify Installation
 
-The Manhattan heuristic is admissible because it never overestimates the number
-of four-neighbor grid moves in an obstacle-free lower bound. It is also
-consistent because moving one step changes the Manhattan estimate by at most one.
+Test that everything works:
 
-Used for:
+```bash
+cd src
+python arena.py --seek example_student --hide example_student
+```
 
-- Chase planning by the Seek Agent.
-- Escape-route analysis by the Hide Agent through distance and path features.
-- Path reconstruction for debugging and visualization.
-
-Complexity:
-
-- Worst-case time: `O(E log V)` with a priority queue.
-- Space: `O(V)`.
-- On this 21x21 grid, the heuristic usually reduces expansions substantially.
-
-### 3.3 Local Search and Evaluation Functions
-
-Search is not only pathfinding. The agents must evaluate states because a move
-that is locally closer or farther may still be strategically poor.
-
-Each legal action is treated as a neighboring candidate state. The agent scores
-each candidate with an evaluation function, then refines the choice with
-limited-depth adversarial search.
-
-Hide evaluation rewards:
-
-- Maximizing distance from Ghost.
-- Maximizing reachable safe area.
-- Maximizing branching factor.
-- Preserving future mobility.
-
-Hide evaluation penalizes:
-
-- Dead ends.
-- Narrow corridors near Ghost.
-- Low safe-area states.
-- Trap risk.
-
-Seek evaluation rewards:
-
-- Minimizing distance to Hide.
-- Reducing enemy mobility.
-- Increasing interception potential.
-- Forcing Hide into corridors or dead ends.
-
-### 3.4 Adversarial Search
-
-#### Minimax
-
-Hide and Seek form a two-player zero-sum adversarial problem. Hide maximizes
-survival utility. Seek minimizes Hide's advantage and maximizes capture
-potential.
-
-The implementation uses depth-limited minimax because the one-second action
-limit prevents exhaustive search to the end of the game.
-
-#### Alpha-Beta Pruning
-
-Alpha-beta pruning improves minimax efficiency by maintaining two bounds:
-
-- `alpha`: the best value found so far for the maximizing player.
-- `beta`: the best value found so far for the minimizing player.
-
-When `beta <= alpha`, the remaining branch cannot change the final minimax
-decision and can be pruned.
-
-Alpha-beta pruning reduces runtime while preserving the same decision result as
-full minimax at the same depth. The implementation also orders actions
-heuristically so strong branches are considered first.
+You should see a colorful visualization of Pacman (blue) chasing Ghost (red) in a maze!
 
 ---
 
-## 4. Agent Design
+## Understanding the Game
 
-### Hide Agent
+### Objective
 
-Decision pipeline:
+- **Pacman (Seeker)**: Catch the Ghost by moving to within the capture distance (reaches the same position by default, but this threshold can be configured).
+- **Ghost (Hider)**: Evade Pacman for as long as possible (survive until max steps).
 
-1. Generate legal moves.
-2. Run flood-fill analysis.
-3. Run BFS distance analysis.
-4. Score candidate states with the Hide evaluation function.
-5. Refine decisions with minimax.
-6. Return the final action.
+### Win Conditions
 
-Hide decision pipeline:
+- **Pacman wins**: Catches Ghost before the maximum steps are reached.
+- **Ghost wins**: Survives for max steps (default: 200) without being caught.
 
-```mermaid
-flowchart TD
-    S[Current Pacman State] --> L[Generate Legal Moves]
-    L --> F[Flood-Fill Safe Area]
-    L --> B[BFS Distance to Ghost]
-    F --> E[Hide Evaluation]
-    B --> E
-    E --> M[Depth-Limited Minimax]
-    M --> A[Alpha-Beta Pruning]
-    A --> R[Return Action]
+### The Map
+
+The game is played on a grid maze, and you receive the current layout as a 2D numpy array:
+
+- `0` = Empty space (you can move here)
+- `1` = Wall (you cannot move here)
+- `-1` = Unseen/Fog of war (you cannot see what is here due to limited observation radius)
+
+### Movement
+
+You can move in 5 directions by returning a `Move` enum:
+
+```python
+Move.UP      # Move up    (row - 1, col)
+Move.DOWN    # Move down  (row + 1, col)
+Move.LEFT    # Move left  (row, col - 1)
+Move.RIGHT   # Move right (row, col + 1)
+Move.STAY    # Don't move (row, col)
 ```
 
-### Seek Agent
+**Advanced Pacman Movement:**
+While Ghost agents must always return a single `Move` enum, Pacman agents have access to a straight-path speed multiplier. If the aren is configured with `pacman_speed > 1`, Pacman can choose to move multiple steps in the same direction in a single turn! To do this, a Pacman agent can instead return a tuple `(Move, steps)` where `steps` is an integer between 1 and the maximum allowed speed.
 
-Decision pipeline:
+### Important: Synchronous Execution
 
-1. Run A* chase planning.
-2. Analyze reachability and interception opportunities.
-3. Run minimax search.
-4. Apply alpha-beta pruning.
-5. Return the final action.
+**Both agents move at the SAME time!**
 
-Seek decision pipeline:
+- Both receive the state simultaneously
+- Both decide their moves at the same time
+- Both positions update at once
 
-```mermaid
-flowchart TD
-    S[Current Ghost State] --> A[A* Chase Planning]
-    S --> R[Reachability Analysis]
-    A --> E[Seek Evaluation]
-    R --> E
-    E --> M[Minimax Search]
-    M --> P[Alpha-Beta Pruning]
-    P --> O[Return Action]
+This means you cannot react to your opponent's move instantly - you must predict it!
+
+### Game Information You Receive
+
+Every step, your `step()` method receives:
+
+1. **`map_state`**: 2D numpy array of the maze (`0`=empty, `1`=wall, `-1`=unseen)
+2. **`my_position`**: Your current position as `(row, col)`
+3. **`enemy_position`**: Enemy's current position as `(row, col)` if they are visible, or **`None`** if they are outside your observation radius (when fog of war is enabled)
+4. **`step_number`**: Current step number in the game (starts at 1)
+
+---
+
+## Creating Your Agent
+
+### Required Code Structure
+
+Your `agent.py` must define a `PacmanAgent` and/or `GhostAgent` class:
+
+```python
+import sys
+from pathlib import Path
+
+# Add src to path so you can import framework classes
+src_path = Path(__file__).parent.parent.parent / "src"
+sys.path.insert(0, str(src_path))
+
+from agent_interface import PacmanAgent as BasePacmanAgent
+from agent_interface import GhostAgent as BaseGhostAgent
+from environment import Move
+import numpy as np
+
+
+class PacmanAgent(BasePacmanAgent):
+    """Your Pacman (Seeker) implementation."""
+    
+    def __init__(self, **kwargs):
+        """Initialize your agent. Called once at game start."""
+        super().__init__(**kwargs)
+        # Initialize your data structures here
+        # Example: self.path_cache = {}
+        
+    def step(self, map_state, my_position, enemy_position, step_number):
+        """
+        Called every step. Return your move decision.
+        
+        Args:
+            map_state: numpy array (height x width), 0=empty, 1=wall, -1=unseen
+            my_position: (row, col) tuple of Pacman's position
+            enemy_position: (row, col) tuple of Ghost's position or None if unseen
+            step_number: Current step number (starts at 1)
+            
+        Returns:
+            Move or tuple (Move, int): One of the Move enums OR a tuple of
+            the Move enum and number of steps (if pacman_speed > 1).
+        """
+        # Handle fog of war gracefully (when enemy is not visible)
+        if enemy_position is None:
+            # Implement your exploration/searching logic here
+            return Move.STAY
+        
+        # Example: Simple greedy move toward enemy
+        row_diff = enemy_position[0] - my_position[0]
+        col_diff = enemy_position[1] - my_position[1]
+        
+        if abs(row_diff) > abs(col_diff):
+            if row_diff > 0:
+                return Move.DOWN
+            else:
+                return Move.UP
+        else:
+            if col_diff > 0:
+                return Move.RIGHT
+            else:
+                return Move.LEFT
+
+
+class GhostAgent(BaseGhostAgent):
+    """Your Ghost (Hider) implementation."""
+    
+    def __init__(self, **kwargs):
+        """Initialize your agent. Called once at game start."""
+        super().__init__(**kwargs)
+        # Initialize your data structures here
+        
+    def step(self, map_state, my_position, enemy_position, step_number):
+        """
+        Called every step. Return your move decision.
+        
+        Args:
+            map_state: numpy array, 0=empty, 1=wall, -1=unseen
+            my_position: (row, col) tuple of Ghost's position
+            enemy_position: (row, col) tuple of Pacman's position or None
+            step_number: Current step number (starts at 1)
+            
+        Returns:
+            Move: One of the Move enums (UP, DOWN, LEFT, RIGHT, STAY)
+        """
+        # Handle fog of war gracefully 
+        if enemy_position is None:
+            # Ghost should keep moving unpredictably when Pacman is out of sight!
+            return Move.STAY
+        
+        # Example: Simple greedy move away from enemy
+        row_diff = enemy_position[0] - my_position[0]
+        col_diff = enemy_position[1] - my_position[1]
+        
+        if abs(row_diff) > abs(col_diff):
+            if row_diff > 0:
+                return Move.UP  # Move away
+            else:
+                return Move.DOWN
+        else:
+            if col_diff > 0:
+                return Move.LEFT  # Move away
+            else:
+                return Move.RIGHT
 ```
 
-Visualizer architecture:
+### Essential Helper Functions
 
-```mermaid
-flowchart LR
-    PythonAgents[Python Agents] --> Simulator[Local Simulator]
-    Simulator --> Generator[scripts/generate_replay.py]
-    Generator --> JSON[visualizer/public/sample_replay.json]
-    JSON --> React[React + TypeScript App]
-    React --> Map[Map Panel]
-    React --> Side[Side Panel]
-    React --> Timeline[Timeline Panel]
-    React --> Layers[Layer Toggles]
-```
+Add these helper methods to your agent class to quickly parse the grid layout:
 
-UI panels:
+```python
+def _is_valid_position(self, pos, map_state):
+    """Check if position is valid (not wall or unseen boundaries)."""
+    row, col = pos
+    height, width = map_state.shape
+    
+    # Check bounds
+    if row < 0 or row >= height or col < 0 or col >= width:
+        return False
+    
+    # Check not a wall 
+    # (Optional: treat unseen (-1) carefully based on your strategy!)
+    return map_state[row, col] == 0
 
-- Map Panel: grid, walls, Pacman, Ghost, paths, explored cells, danger cells,
-  safe area, dead ends, and candidate arrows.
-- Algorithm Step Inspector: chronological reasoning pipeline with clickable
-  sections for legal moves, BFS, A*, flood fill, danger/dead-end analysis,
-  candidate evaluation, and minimax alpha-beta.
-- Score and Explanation Panel: current step, selected agent, algorithm name, chosen action,
-  action scores, explanation text, and search-frame statistics.
-- Timeline Panel: game-step slider, previous/next controls, play/pause, speed,
-  and search expansion frame slider.
-- Search Playback: frame-by-frame animation for BFS, A*, flood fill, and
-  minimax candidates.
 
-How to interpret inspector panels:
+def _apply_move(self, pos, move):
+    """Apply a move to a position, return new position."""
+    delta_row, delta_col = move.value
+    return (pos[0] + delta_row, pos[1] + delta_col)
 
-- BFS Inspector: queue/frontier growth, explored count, distance map size, and
-  final path.
-- A* Inspector: current node, open/closed sets, and tracked `g(n)`, `h(n)`, and
-  `f(n)` values.
-- Flood Fill Inspector: reachable and safe-area expansion counts.
-- Danger/Dead-End Inspector: danger heat, dead ends, corridors, and junction
-  cells.
-- Candidate Evaluation Inspector: feature and weighted-term breakdowns for every
-  action.
-- Minimax Viewer: root/action branches, leaf values, alpha/beta metadata,
-  pruning events, and the best action.
 
-Keyboard controls:
+def _get_neighbors(self, pos, map_state):
+    """Get all valid neighboring positions and their moves."""
+    neighbors = []
+    
+    for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
+        next_pos = self._apply_move(pos, move)
+        if self._is_valid_position(next_pos, map_state):
+            neighbors.append((next_pos, move))
+    
+    return neighbors
 
-- `SPACE`: play or pause game replay.
-- `LEFT` / `RIGHT`: previous or next game step.
-- `N` / `B`: next or previous search frame.
-- `TAB`: switch Hide, Seek, and side-by-side trace mode.
-- `1`: BFS.
-- `2`: A*.
-- `3`: Flood Fill.
-- `4`: Danger/Dead-End.
-- `5`: Candidate Scores.
-- `6`: Minimax Tree.
-- `0`: all layers off.
 
-Supported visualizations:
-
-- BFS expansion.
-- A* path.
-- Flood fill area.
-- Minimax candidate actions.
-- Alpha-beta pruned branches when present in trace data.
-
-Screenshot placeholders:
-
-```text
-[Screenshot Placeholder: Map Panel showing BFS expansion and A* path]
-[Screenshot Placeholder: Side Panel showing action scores and explanation]
-[Screenshot Placeholder: Timeline Panel controlling replay playback]
+def _manhattan_distance(self, pos1, pos2):
+    """Calculate Manhattan distance between two positions."""
+    return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1])
 ```
 
 ---
 
-## 5. Running the Project
+## Implementing Search Algorithms
 
-Run the Python smoke test:
+### Breadth-First Search (BFS)
 
-```bash
-python scripts/run_smoke_test.py
-```
+**Best for Pacman** - Finds the shortest path to the Ghost. You can implement a standard BFS using a queue to track visited nodes and find the optimal sequence of moves.
 
-Generate a replay for the TypeScript visualizer:
+### A* Search
 
-```bash
-python scripts/generate_replay.py
-```
+**Best for Pacman** - Optimal path with heuristic guidance. Use a priority queue with a heuristic (like Manhattan distance) to estimate the cost to the goal, making the search significantly faster than BFS.
 
-For the full AI Search Inspector replay:
+### Greedy Best-First Search
 
-```bash
-python scripts/generate_replay.py --trace-level full
-```
+**Faster than A*** but not always optimal. Explores the map based entirely on the heuristic distance.
 
-Run the web visualizer:
+### Evasion Strategy for Ghost
 
-```bash
-cd visualizer
-npm install
-npm run dev
-```
+**Maximize distance from Pacman** - Since the ghost wants to stay alive, simple strategies might include finding the immediately adjacent move that maximizes the Manhattan distance. 
 
-Build the web visualizer:
+**Find furthest reachable position** - Advanced strategies involve running a BFS to map out reachable distances and heading toward the furthest accessible tile.
 
-```bash
-cd visualizer
-npm run build
-```
 ---
 
-## Replay Data Contract
+## Testing Your Agent
 
-The current TypeScript visualizer uses a stable replay-driven data contract.
-Python runs the simulator and writes JSON once after the episode ends. The
-browser only reads JSON; it never calls Python directly.
-
-Replay file:
-
-```text
-visualizer/public/match_log.json
-```
-
-For compatibility, the same content is also copied to:
-
-```text
-visualizer/public/sample_replay.json
-```
-
-Schema:
-
-```json
-{
-  "map": [[0, 1, 0]],
-  "width": 21,
-  "height": 22,
-  "initial": {
-    "pacman": [16, 10],
-    "ghost": [8, 10]
-  },
-  "steps": [
-    {
-      "stepNumber": 0,
-      "pacmanPos": [16, 10],
-      "ghostPos": [8, 10],
-      "pacmanAction": "STAY",
-      "ghostAction": "DOWN",
-      "manhattanDistance": 8,
-      "exploredNodes": [[16, 10], [16, 9]],
-      "predictedPath": [[16, 10], [15, 10]],
-      "score": 120.5,
-      "candidateScores": {
-        "UP": 82.5,
-        "DOWN": 51.0,
-        "LEFT": -20.0,
-        "RIGHT": 144.7,
-        "STAY": 10.2
-      },
-      "chosenAgent": "hide",
-      "algorithm": "BFS + Flood Fill + Minimax",
-      "explanation": "The selected action improves safety according to the search evaluation."
-    }
-  ]
-}
-```
-
-Coordinates are always `[row, col]`. The frontend reads `width` and `height`
-from JSON and does not hard-code the board size.
-
-## Visualizer
-
-The simplified visualizer contains:
-
-- `GameBoard`: official map, Pacman, Ghost, explored nodes, predicted path, and
-  grid lines.
-- `DashboardPanel`: current step, positions, Manhattan distance, algorithm,
-  score, chosen agent, and explanation.
-- `ScorePanel`: action-score table with best score highlighted green, worst
-  score highlighted red, and chosen action outlined.
-- `LayerToggles`: explored nodes, predicted path, candidate scores, and grid.
-- `ControlPanel`: play, pause, previous step, next step, restart, step slider,
-  and replay speed.
-
-Generate replay:
+### Basic Testing
 
 ```bash
-python scripts/generate_replay.py --trace-level full
+# From src directory
+cd src
+
+# Test your Pacman against example Ghost
+python arena.py --seek <your_id> --hide example_student
+
+# Test your Ghost against example Pacman
+python arena.py --seek example_student --hide <your_id>
+
+# Test both your agents against each other
+python arena.py --seek <your_id> --hide <your_id>
 ```
 
-Run UI:
+### Advanced Testing Options
+
+You can specify additional game mechanics such as the capture distance threshold, speeds, and the fog-of-war observation conditions directly from the command line:
 
 ```bash
-cd visualizer
-npm install
-npm run dev
+# Faster testing (no visualization)
+python arena.py --seek <your_id> --hide example_student --no-viz
+
+# Slower visualization for debugging (1 second delays)
+python arena.py --seek <your_id> --hide example_student --delay 1.0
+
+# Adjust max steps (longer game: 300, shorter game: 50)
+python arena.py --seek <your_id> --hide example_student --max-steps 300
+
+# Stochastic starting mode (random starting positions instead of classic starts)
+python arena.py --seek <your_id> --hide example_student --start-mode stochastic
+
+# Adjust capture distance (catch ghost when distance < 3 instead of default)
+python arena.py --seek <your_id> --hide example_student --capture-distance 3
+
+# Allow Pacman an advanced speed multiplier 
+# (You may return e.g. (Move.UP, 2) in your PacmanAgent if this is > 1)
+python arena.py --seek <your_id> --hide example_student --pacman-speed 2
+
+# Limit observation visibility (test Fog of War)
+python arena.py --seek <your_id> --hide example_student --pacman-obs-radius 5 --ghost-obs-radius 3
 ```
 
-Keyboard controls:
+### Using the Run Script
 
-- `SPACE`: play or pause.
-- `LEFT`: previous step.
-- `RIGHT`: next step.
-- `R`: restart.
-- `E`: toggle explored nodes.
-- `P`: toggle predicted path.
+From the Arena directory:
+
+```bash
+./run_game.sh --seek <your_id> --hide example_student
+```
+
+---
+
+## Debugging Tips
+
+### 1. Add Print Statements
+
+```python
+def step(self, map_state, my_position, enemy_position, step_number):
+    print(f"Step {step_number}: My pos={my_position}, Enemy pos={enemy_position}")
+    
+    if enemy_position is not None:
+        path = self.bfs(my_position, enemy_position, map_state)
+        print(f"  Found path: {[m.name for m in path[:5]]}")  # First 5 moves
+        
+        if path:
+            return path[0]
+            
+    return Move.STAY
+```
+
+### 2. Watch Visualization Slowly
+
+```bash
+python arena.py --seek <your_id> --hide example_student --delay 1.0
+```
+
+### 3. Test Edge Cases
+
+```python
+# Test helper functions independently
+agent = PacmanAgent()
+test_pos = (10, 10)
+test_map = np.zeros((21, 21))  # Empty map
+
+# Test is_valid_position
+assert agent._is_valid_position(test_pos, test_map) == True
+assert agent._is_valid_position((-1, 10), test_map) == False
+
+# Test apply_move
+new_pos = agent._apply_move(test_pos, Move.UP)
+assert new_pos == (9, 10)
+
+print("All tests passed!")
+```
+
+### 4. Check for Infinite Loops
+
+Make sure your search algorithms terminate:
+
+```python
+def bfs(self, start, goal, map_state):
+    queue = deque([(start, [])])
+    visited = {start}  # IMPORTANT: Track visited nodes!
+    
+    max_iterations = 10000  # Safety limit
+    iterations = 0
+    
+    while queue and iterations < max_iterations:
+        iterations += 1
+        # ... rest of BFS
+        
+    if iterations >= max_iterations:
+        print("WARNING: BFS hit iteration limit!")
+    
+    return [Move.STAY]
+```
+
+### 5. Validate Return Values
+
+```python
+def step(self, map_state, my_position, enemy_position, step_number):
+    move = self.calculate_best_move(...)
+    
+    # Validate before returning
+    if not isinstance(move, Move) and not isinstance(move, tuple):
+        print(f"ERROR: Invalid move type: {type(move)}")
+        return Move.STAY
+    
+    return move
+```
+
+---
+
+## Common Errors
+
+### Error: "Agent file not found"
+
+**Cause:** Folder name doesn't match the ID you used in command
+
+**Solution:**
+```bash
+# Check your folder name
+ls submissions/
+
+# Make sure it matches exactly
+python arena.py --seek exact_folder_name --hide example_student
+```
+
+### Error: "Must define a 'PacmanAgent' class"
+
+**Cause:** Class name is wrong or misspelled
+
+**Solution:**
+- Class must be named **exactly** `PacmanAgent` or `GhostAgent`
+- Check for typos: `PacMan`, `Pacman`, `pacmanAgent` are all WRONG
+- Make sure class inherits: `class PacmanAgent(BasePacmanAgent):`
+
+### Error: "Returned invalid move type"
+
+**Cause:** Returning wrong type (string, tuple, None, etc.)
+
+**Solution:**
+```python
+# ❌ WRONG
+return "UP"       # Wrong type
+return (0, -1)    # Returning coordinates
+return None       # Unhandled fallback
+
+# ✅ CORRECT for Ghost and Pacman
+return Move.UP
+
+# ✅ CORRECT for Pacman only (if max speed is configured)
+return (Move.UP, 2)
+```
+
+### Error: "Pacman requested N steps which exceeds maximum speed"
+
+**Cause:** Returning a speed multiplier tuple where the steps integer is greater than `--pacman-speed` (which defaults to 1). 
+**Solution:** Ensure `(Move, steps)` enforces `1 <= steps <= max_speed`.
+
+### Error: Agent crashes with IndexError
+
+**Cause:** Accessing map positions without validation or trying to read coordinates outside boundaries.
+
+**Solution:**
+```python
+# Always validate before accessing
+if self._is_valid_position(pos, map_state):
+    value = map_state[pos[0], pos[1]]  # Safe
+```
+
+### Error: Agent crashes with TypeError when calculating distances
+
+**Cause:** You may be treating `enemy_position` as a constant, but it turned into `None` due to the observation radius (Fog of War) hiding the enemy.
+
+**Solution:**
+```python
+# Validate that enemy is present before calculating distances
+if enemy_position is not None:
+    distance = self._manhattan_distance(my_position, enemy_position)
+```
+
+### Error: Agent takes too long / timeout
+
+**Cause:** Inefficient algorithm or infinite loop.
+
+**Solution:**
+1. Add visited set to prevent revisiting nodes
+2. Limit search depth
+3. Use better data structures (heap for A*, deque for BFS)
+4. Add iteration limit for safety
+
+---
+
+## Advanced Strategies
+
+### Strategy 1: Path Replanning
+
+Don't recompute the entire path every step. Cache your previous path and only replan if the enemy's position has significantly changed or if the current path runs out.
+
+### Strategy 2: Predictive Movement
+
+Instead of aiming for the enemy's current tile, predict where the enemy will be next. Since Ghosts often try to maximize distance, you can simulate their next move and intercept them.
+
+### Strategy 3: Adversarial Search (Minimax)
+
+You can model the game as a minimizing and maximizing player. Minimax (optionally with Alpha-Beta pruning) allows you to search a few steps ahead to evaluate potential adversarial interactions.
+
+---
+
+## Quick Reference
+
+### Available Moves
+
+```python
+Move.UP      # (row-1, col)
+Move.DOWN    # (row+1, col)
+Move.LEFT    # (row, col-1)
+Move.RIGHT   # (row, col+1)
+Move.STAY    # (row, col)
+```
+
+### Input Parameters to `step()`
+
+- `map_state`: 2D numpy array (`0`=empty, `1`=wall, `-1`=unseen)
+- `my_position`: (row, col) tuple
+- `enemy_position`: (row, col) tuple, or `None` if hidden by Fog of War.
+- `step_number`: int (starts at 1)
+
+### Essential Helper Functions
+
+```python
+_is_valid_position(pos, map_state)  # Check if position is valid
+_apply_move(pos, move)               # Apply move to position
+_get_neighbors(pos, map_state)       # Get valid neighbors
+_manhattan_distance(pos1, pos2)      # Calculate distance
+```
+
+### Common Algorithms
+
+- **BFS**: Shortest path (optimal for Pacman)
+- **A\***: Optimal with heuristic (efficient for Pacman)
+- **Greedy**: Fast but not optimal
+- **Minimax**: Adversarial search (good for Ghost)
+
+---
+
+## Checklist Before Submission
+
+- [ ] Agent loads without errors
+- [ ] Agent doesn't crash during game
+- [ ] Agent makes valid moves (returns Move enum, or appropriate tuple for Pacman speed multiplier)
+- [ ] Handles unseen areas (`-1`) and `enemy_position` being `None` appropriately
+- [ ] Agent performs better than random
+- [ ] Agent handles being trapped in corners
+- [ ] Agent works for full game length (200 steps)
+- [ ] Code is well-documented with comments
+- [ ] No print statements in final version (or minimal)
+
+---
+
+## Getting Help
+
+1. **Read this guide** thoroughly.
+2. **Check example_student/agent.py** for working baseline code.
+3. **Test with `--delay 0.5`** to see what your agent is doing in real-time.
+4. **Use print statements** to trace variables, especially `enemy_position`.
+5. **Ask your instructor or TA** if you get stuck.
+
+---
+
+## Good Luck! 🎮
+
+Have fun implementing your AI agent! Remember:
+
+- Start simple (get it working first, then add predictions/fogs)
+- Test frequently
+- Improve incrementally
+- Learn from mistakes
+- Compete fairly and have fun!
+
+**May the best algorithm win!** 🏆
