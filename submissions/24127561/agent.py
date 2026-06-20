@@ -317,6 +317,9 @@ class PacmanAgent(BasePacmanAgent):
 
 class GhostAgent(BaseGhostAgent):
 
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
     def step(
         self,
         map_state,
