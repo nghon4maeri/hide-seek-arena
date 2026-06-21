@@ -237,6 +237,10 @@ class GhostAgent(BaseGhostAgent):
             result = self._strategic_move(map_state, me, pac, pd, gd, safe_candidates)
             if result is not None:
                 return result
+            # Fallback: floodfill safety scoring when A* finds no good target
+            result = self._floodfill_move(map_state, me, pac, pd, safe_candidates)
+            if result is not None:
+                return result
 
         # ---- Tactical: minimax evasion ----
         return self._tactical_move(map_state, me, pac, pd, gd, safe_candidates, t0)
@@ -287,6 +291,69 @@ class GhostAgent(BaseGhostAgent):
             return None  # Would move into capture
 
         return move
+
+    # ------------------------------------------------------------------
+    # Floodfill-based safety scoring (when A* strategic fails to find target)
+    # ------------------------------------------------------------------
+    def _score_position(self, ms, gpos, pac, pd):
+        """Score a candidate ghost position. Higher = safer.
+
+        Weights are tuned experimentally for the 21×21 Pacman maze.
+        """
+        score = 0.0
+        bfs_dist = pd.get(gpos, _manhattan(gpos, pac))
+
+        # ---- 1. Distance from Pacman (primary survival signal) ----
+        score += 10.0 * bfs_dist
+
+        # ---- 2. Safe reachable area — cells Ghost reaches before Pacman (speed‑2) ----
+        gd = self._bfs.dist(ms, gpos)
+        safe_count = 0
+        for _cell_key, g_val in gd.items():
+            if g_val > 15:
+                continue
+            p_val = pd.get(_cell_key, 999)
+            # Ghost arrives strictly before speed‑2 Pacman
+            if g_val < (p_val + 1) // 2:
+                safe_count += 1
+        score += 0.5 * safe_count
+
+        # ---- 3. Topology: reward junctions, penalise dead‑ends and corridors ----
+        exits = _cell_exits(gpos, ms)
+        if exits >= 3:
+            score += 30.0          # junction → more escape options
+        elif exits <= 1:
+            score -= 50.0          # dead‑end → trap risk
+        elif exits == 2 and bfs_dist <= 6:
+            score -= 15.0          # corridor near Pacman → risky
+
+        # ---- 4. Pre‑computed dead‑end map penalty ----
+        if gpos in self._dead_ends:
+            score -= 80.0
+
+        return score
+
+    def _floodfill_move(self, ms, me, pac, pd, candidates):
+        """Pick the move whose destination scores highest on safety heuristics.
+
+        Returns None only when every move puts Ghost adjacent to Pacman.
+        """
+        if not candidates:
+            return None
+
+        best_move = None
+        best_score = float("-inf")
+
+        for m in candidates:
+            nxt = _apply(me, m)
+            if _manhattan(nxt, pac) < 2:
+                continue  # would step into capture range
+            s = self._score_position(ms, nxt, pac, pd)
+            if s > best_score:
+                best_score = s
+                best_move = m
+
+        return best_move
 
     # ------------------------------------------------------------------
     # Tactical: minimax alpha-beta for close-range evasion

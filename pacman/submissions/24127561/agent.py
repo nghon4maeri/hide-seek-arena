@@ -15,7 +15,7 @@ from environment import Move
 # ===================================================================
 # Constants
 # ===================================================================
-MOVE_ORDER: Tuple[Move, ...] = (Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT)
+MOVE_ORDER = (Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT)
 CHOKE_SCOUT_DIST = 7     # How far ahead to scan for junctions
 LOCK_DURATION = 3        # Turns to hold a choke-point lock
 A_STAR_PHASE_END = 10    # Switch from pure A* to interception after this step
@@ -426,32 +426,6 @@ class PacmanAgent(BasePacmanAgent):
             Move.STAY,
             1
         )
-
-            exits = _cell_exits(nxt, ms)
-
-            # Is this a junction (>= 3 exits)?
-            if exits >= 3:
-                p_to = pac_dist.get(nxt, 999)
-                g_to = ghost_dist.get(nxt, 999)
-                # Pacman speed-2: Pacman covers distance in ceil(p_to/2) turns
-                # Ghost covers distance in g_to turns (or step_ahead from current)
-                # Intercept if Pacman can reach in <= Ghost's arrival time
-                pac_turns = (p_to + 1) // 2
-                if pac_turns <= step_ahead + 1:  # +1 margin for lock
-                    return nxt
-
-            # Dead-end entrance (exits == 2 but on a corridor branch)
-            if exits == 2 and step_ahead >= 3:
-                # Check if this corridor is a trap for Ghost
-                p_to = pac_dist.get(nxt, 999)
-                g_to = ghost_dist.get(nxt, 999)
-                pac_turns = (p_to + 1) // 2
-                if pac_turns <= step_ahead:
-                    return nxt
-
-            cur = nxt
-
-        return None
 
     # ------------------------------------------------------------------
     # Convert A* path → (Move, steps) action

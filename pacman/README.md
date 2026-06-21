@@ -191,55 +191,73 @@ class GhostAgent(BaseGhostAgent):
 
 ## 4. Hướng dẫn Chạy & Đánh giá
 
-Tất cả lệnh bên dưới được chạy từ **thư mục gốc của project** (`hide-seek-arena/`).
+Có 2 cách chạy, chọn 1 trong 2:
 
-### 4.1. Đấu thử giữa hai agent trong nhóm
+| Cách | Mô tả |
+|------|-------|
+| **A: Chạy từ repo root** | Cần thêm `--submissions-dir pacman/submissions` cho mọi lệnh `arena.py` |
+| **B: `cd pacman/src` trước** | Không cần flag `--submissions-dir` (tự động dùng `../submissions`) |
+
+> Hướng dẫn bên dưới dùng **cách B** — ngắn gọn và ít lỗi hơn. Tất cả lệnh `benchmark_agents.py` và test script vẫn chạy từ repo root bình thường.
+
+---
+
+### 4.1. Đấu giữa Pacman (24127561) và Ghost (24127192)
 
 ```bash
-# Pacman (24127561) vs Ghost (24127192) — 10 trận
-python pacman/scripts/benchmark_agents.py --seek 24127561 --hide 24127192 --games 10
+# === Benchmark 10 trận (chạy từ repo root) ===
+python pacman/scripts/benchmark_agents.py --seek 24127561 --hide 24127192 --games 10 --max-steps 200
 
-# Chạy 1 trận có hiển thị trực quan (terminal visualization)
-python pacman/src/arena.py --seek 24127561 --hide 24127192
+# === Chạy 1 trận có hiển thị trực quan (terminal) ===
+cd pacman/src
+python arena.py --seek 24127561 --hide 24127192
+
+# === Chạy 1 trận không hiển thị, vị trí ngẫu nhiên ===
+cd pacman/src
+python arena.py --seek 24127561 --hide 24127192 --no-viz --start-mode stochastic --max-steps 200
 ```
 
-### 4.2. Test Pacman với Ghost baseline của giảng viên
+### 4.2. Test Pacman (24127561) với Ghost mẫu của giảng viên
 
 ```bash
-# Pacman nhóm vs Ghost mẫu — 5 trận
-python pacman/scripts/benchmark_agents.py --seek 24127561 --hide simple_agent --games 5
+# Benchmark 5 trận — Pacman nhóm vs Ghost mẫu
+python pacman/scripts/benchmark_agents.py --seek 24127561 --hide example_student --games 5 --max-steps 200
 
-# Chạy nhanh không hiển thị, giới hạn 50 step
-python pacman/src/arena.py --seek 24127561 --hide simple_agent --no-viz --max-steps 50
+# Chạy 1 trận không hiển thị
+cd pacman/src
+python arena.py --seek 24127561 --hide example_student --no-viz --max-steps 200
 ```
 
-### 4.3. Test Ghost với Pacman baseline của giảng viên
+### 4.3. Test Ghost (24127192) với Pacman mẫu của giảng viên
 
 ```bash
-# Ghost nhóm vs Pacman mẫu — 5 trận
-python pacman/scripts/benchmark_agents.py --seek simple_agent --hide 24127192 --games 5
+# Benchmark 5 trận — Pacman mẫu vs Ghost nhóm
+python pacman/scripts/benchmark_agents.py --seek example_student --hide 24127192 --games 5 --max-steps 200
 
-# Chạy nhanh không hiển thị, giới hạn 50 step
-python pacman/src/arena.py --seek simple_agent --hide 24127192 --no-viz --max-steps 50
+# Chạy 1 trận không hiển thị
+cd pacman/src
+python arena.py --seek example_student --hide 24127192 --no-viz --max-steps 200
 ```
 
 ### 4.4. Test bản merge cuối cùng (`team_submission`)
 
 ```bash
+cd pacman/src
+
 # Team submission làm Pacman vs Ghost mẫu
-python pacman/src/arena.py --seek team_submission --hide example_student --no-viz
+python arena.py --seek team_submission --hide example_student --no-viz --max-steps 200
 
 # Team submission làm Ghost vs Pacman mẫu
-python pacman/src/arena.py --seek example_student --hide team_submission --no-viz
+python arena.py --seek example_student --hide team_submission --no-viz --max-steps 200
 
-# Team submission đấu với chính nó
-python pacman/src/arena.py --seek team_submission --hide team_submission --no-viz
+# Team submission đấu với chính nó (Pacman và Ghost đều là team)
+python arena.py --seek team_submission --hide team_submission --no-viz --max-steps 200
 ```
 
 ### 4.5. Smoke Test & Unit Test
 
 ```bash
-# Smoke test nhanh (5 step, kiểm tra không crash)
+# Smoke test nhanh (chạy từ repo root)
 python pacman/scripts/run_smoke_test.py
 
 # Chạy toàn bộ test suite
@@ -252,21 +270,25 @@ python -m pytest pacman/tests/test_submission_interface.py -v
 ### 4.6. Các Tùy chọn Nâng cao
 
 ```bash
+cd pacman/src
+
 # Điều chỉnh tốc độ Pacman (mặc định: 2)
-python pacman/src/arena.py --seek 24127561 --hide 24127192 --pacman-speed 3
+python arena.py --seek 24127561 --hide 24127192 --pacman-speed 3
 
 # Điều chỉnh ngưỡng bắt (mặc định: 2, tức là Manhattan < 2)
-python pacman/src/arena.py --seek 24127561 --hide 24127192 --capture-distance 3
-
-# Giới hạn thời gian mỗi step (mặc định: 1.0s)
-python pacman/src/arena.py --seek 24127561 --hide 24127192 --step-timeout 1.0
+python arena.py --seek 24127561 --hide 24127192 --capture-distance 3
 
 # Giảm thời gian trực quan hóa (xem chậm để debug)
-python pacman/src/arena.py --seek 24127561 --hide 24127192 --delay 0.5
+python arena.py --seek 24127561 --hide 24127192 --delay 0.5
 
-# Chế độ khởi đầu ngẫu nhiên
-python pacman/src/arena.py --seek 24127561 --hide 24127192 --start-mode stochastic
+# Chế độ khởi đầu ngẫu nhiên (công bằng hơn deterministic start)
+python arena.py --seek 24127561 --hide 24127192 --start-mode stochastic --max-steps 200 --no-viz
+
+# Giới hạn thời gian mỗi step (mặc định: 1.0s, chỉ hoạt động trên Linux/macOS)
+python arena.py --seek 24127561 --hide 24127192 --step-timeout 1.0
 ```
+
+> **Lưu ý:** `--step-timeout` dùng `SIGALRM` nên **không hoạt động trên Windows**. Trên Windows, warning sẽ hiện ra và timeout bị vô hiệu hóa.
 
 ---
 
