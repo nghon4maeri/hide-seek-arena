@@ -1,3 +1,12 @@
-# Hide and Seek Arena - local development requirements
-numpy>=1.24
-pygame>=2.5
+numpy
+pyomo
+cvxpy
+gekko
+ortools
+cpmpy
+pycsp3
+minizinc
+pandas
+scikit-learn
+scipy
+pandas

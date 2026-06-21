@@ -1,12 +1,14 @@
-numpy
-pyomo
-cvxpy
-gekko
-ortools
-cpmpy
-pycsp3
-minizinc
-pandas
-scikit-learn
-scipy
-pandas
+# Pacman vs Ghost Arena — Lab 1: Hide and Seek Arena
+# Dependencies cho khu vực pacman/
+
+# === Core dependency (Framework & Agents) ===
+numpy>=1.20.0
+
+# === Testing ===
+pytest>=7.0.0
+
+# === Optional: Thư viện hợp lệ cho thuật toán nâng cao ===
+# Được phép dùng trong submission (theo quy định môn học),
+# chỉ bỏ comment và cài đặt nếu agent của bạn thực sự import:
+# pandas>=1.3.0
+# scipy>=1.7.0

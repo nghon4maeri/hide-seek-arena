@@ -12,6 +12,119 @@ from agent_interface import PacmanAgent as BasePacmanAgent
 from agent_interface import GhostAgent as BaseGhostAgent
 from environment import Move
 
+# ===================================================================
+# Constants
+# ===================================================================
+MOVE_ORDER: Tuple[Move, ...] = (Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT)
+CHOKE_SCOUT_DIST = 7     # How far ahead to scan for junctions
+LOCK_DURATION = 3        # Turns to hold a choke-point lock
+A_STAR_PHASE_END = 10    # Switch from pure A* to interception after this step
+
+
+# ===================================================================
+# Grid utilities (self-contained)
+# ===================================================================
+
+def _shape(ms):
+    if hasattr(ms, "shape"):
+        return int(ms.shape[0]), int(ms.shape[1])
+    return len(ms), len(ms[0]) if ms else 0
+
+
+def _cell(ms, r, c):
+    return int(ms[r, c]) if hasattr(ms, "shape") else int(ms[r][c])
+
+
+def _apply(pos, move):
+    return (pos[0] + move.value[0], pos[1] + move.value[1])
+
+
+def _valid(pos, ms):
+    r, c = pos
+    h, w = _shape(ms)
+    return 0 <= r < h and 0 <= c < w and _cell(ms, r, c) != 1
+
+
+def _legal(pos, ms):
+    return [m for m in MOVE_ORDER if _valid(_apply(pos, m), ms)]
+
+
+def _manhattan(a, b):
+    return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+
+def _cell_exits(pos, ms):
+    """Count how many valid exits a cell has (degree)."""
+    return sum(1 for m in MOVE_ORDER if _valid(_apply(pos, m), ms))
+
+
+# ===================================================================
+# A* Search — heapq-optimised O(N log N)
+# ===================================================================
+
+def astar(ms, start, goal):
+    """A* shortest path returning list of Move from start to goal."""
+    if goal is None or not _valid(start, ms) or not _valid(goal, ms):
+        return []
+    if start == goal:
+        return []
+
+    open_set = [(0, 0, start)]  # (f, g, pos)
+    came_from = {}
+    g_score = {start: 0}
+    closed = set()
+
+    while open_set:
+        f, g, current = heapq.heappop(open_set)
+        if current in closed:
+            continue
+        closed.add(current)
+
+        if current == goal:
+            path = []
+            while current != start:
+                prev, move = came_from[current]
+                path.append(move)
+                current = prev
+            path.reverse()
+            return path
+
+        for move in MOVE_ORDER:
+            nxt = _apply(current, move)
+            if not _valid(nxt, ms) or nxt in closed:
+                continue
+            ng = g + 1
+            if nxt not in g_score or ng < g_score[nxt]:
+                g_score[nxt] = ng
+                came_from[nxt] = (current, move)
+                heapq.heappush(open_set, (ng + _manhattan(nxt, goal), ng, nxt))
+    return []
+
+
+# ===================================================================
+# BFS distance map (for junction distance checks)
+# ===================================================================
+
+def bfs_dist(ms, start, max_dist=30):
+    """BFS distance map from start, up to max_dist steps."""
+    if not _valid(start, ms):
+        return {}
+    dist = {start: 0}
+    q = [start]
+    for cur in q:
+        if dist[cur] >= max_dist:
+            continue
+        for m in MOVE_ORDER:
+            nxt = _apply(cur, m)
+            if nxt not in dist and _valid(nxt, ms):
+                dist[nxt] = dist[cur] + 1
+                q.append(nxt)
+    return dist
+
+
+# ===================================================================
+# PacmanAgent — SOTA Seeker
+# ===================================================================
 
 class PacmanAgent(BasePacmanAgent):
 
@@ -314,6 +427,88 @@ class PacmanAgent(BasePacmanAgent):
             1
         )
 
+            exits = _cell_exits(nxt, ms)
+
+            # Is this a junction (>= 3 exits)?
+            if exits >= 3:
+                p_to = pac_dist.get(nxt, 999)
+                g_to = ghost_dist.get(nxt, 999)
+                # Pacman speed-2: Pacman covers distance in ceil(p_to/2) turns
+                # Ghost covers distance in g_to turns (or step_ahead from current)
+                # Intercept if Pacman can reach in <= Ghost's arrival time
+                pac_turns = (p_to + 1) // 2
+                if pac_turns <= step_ahead + 1:  # +1 margin for lock
+                    return nxt
+
+            # Dead-end entrance (exits == 2 but on a corridor branch)
+            if exits == 2 and step_ahead >= 3:
+                # Check if this corridor is a trap for Ghost
+                p_to = pac_dist.get(nxt, 999)
+                g_to = ghost_dist.get(nxt, 999)
+                pac_turns = (p_to + 1) // 2
+                if pac_turns <= step_ahead:
+                    return nxt
+
+            cur = nxt
+
+        return None
+
+    # ------------------------------------------------------------------
+    # Convert A* path → (Move, steps) action
+    # ------------------------------------------------------------------
+    def _path_to_action(self, me, path, ms):
+        """Extract first move from A* path, pack consecutive same-direction
+        steps up to pacman_speed (straight-line constraint)."""
+        first_move = path[0]
+
+        # Count desired consecutive same-direction steps from path
+        desired = 1
+        for i in range(1, min(len(path), self.pacman_speed)):
+            if path[i] == first_move:
+                desired += 1
+            else:
+                break
+
+        # Walk up to `desired` steps, stopping if wall encountered
+        steps = 0
+        cur = me
+        for _ in range(min(self.pacman_speed, desired)):
+            nxt = _apply(cur, first_move)
+            if not _valid(nxt, ms):
+                break
+            steps += 1
+            cur = nxt
+
+        return (first_move, max(1, steps))
+
+    # ------------------------------------------------------------------
+    # Exploration (enemy not visible — fog of war fallback)
+    # ------------------------------------------------------------------
+    def _explore(self, me, ms):
+        candidates = _legal(me, ms)
+        if not candidates:
+            return (Move.STAY, 1)
+
+        def score(m):
+            nxt = _apply(me, m)
+            unvisited_bonus = 5 if nxt not in self._visited else 0
+            return unvisited_bonus + _cell_exits(nxt, ms)
+
+        best = max(candidates, key=score)
+        steps = 0
+        cur = me
+        for _ in range(self.pacman_speed):
+            nxt = _apply(cur, best)
+            if not _valid(nxt, ms):
+                break
+            steps += 1
+            cur = nxt
+        return (best, max(1, steps))
+
+
+# ===================================================================
+# GhostAgent — minimal placeholder (not primary deliverable)
+# ===================================================================
 
 class GhostAgent(BaseGhostAgent):
 
