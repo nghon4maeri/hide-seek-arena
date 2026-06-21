@@ -15,7 +15,7 @@ from environment import Move
 # ===================================================================
 # Constants
 # ===================================================================
-MOVE_ORDER: Tuple[Move, ...] = (Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT)
+MOVE_ORDER = (Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT)
 CHOKE_SCOUT_DIST = 7     # How far ahead to scan for junctions
 LOCK_DURATION = 3        # Turns to hold a choke-point lock
 A_STAR_PHASE_END = 10    # Switch from pure A* to interception after this step
@@ -138,6 +138,24 @@ class PacmanAgent(BasePacmanAgent):
 
         self.last_seen_enemy = None
 
+        # Ghost direction tracking
+        self._enemy_direction = None      # (dr, dc) of last Ghost move
+        self._direction_streak = 0        # consecutive steps in same direction
+
+        # Path cache
+        self._cached_target = None
+        self._cached_path = []            # list of positions
+        self._cached_my_pos = None
+
+        # Counters
+        self.interception_used = 0
+        self.path_cache_hit = 0
+        self.path_cache_miss = 0
+
+        # Feature gates
+        self.enable_interception = True   # projection-based interception
+        self.enable_trap_pressure = False  # step extension (disabled by default)
+
     def step(
         self,
         map_state,
@@ -150,30 +168,38 @@ class PacmanAgent(BasePacmanAgent):
 
         if enemy_position is not None:
 
-            if self.last_seen_enemy is not None:
+            # ---- Ghost direction tracking ----
+            self._update_ghost_tracking(enemy_position)
 
-                predicted_row = (
-                    enemy_position[0]
-                    + (enemy_position[0] - self.last_seen_enemy[0])
+            # ---- Interception planning ----
+            # Only when enabled AND Ghost has stable direction >= 2 steps
+            if self.enable_interception and self._direction_streak >= 2:
+                inter_target = self._compute_interception_target(
+                    map_state, enemy_position, my_position
                 )
-
-                predicted_col = (
-                    enemy_position[1]
-                    + (enemy_position[1] - self.last_seen_enemy[1])
-                )
-
-                rows = len(map_state)
-                cols = len(map_state[0])
-
-                if (
-                    0 <= predicted_row < rows
-                    and 0 <= predicted_col < cols
-                    and map_state[predicted_row][predicted_col] == 0
-                ):
-                    target = (
-                        predicted_row,
-                        predicted_col
+                if inter_target is not None:
+                    # Compare A* to interception vs A* to Ghost current
+                    path_to_inter = self._astar(
+                        map_state, my_position, inter_target
                     )
+                    path_to_direct = self._astar(
+                        map_state, my_position, enemy_position
+                    )
+
+                    # Conservative gate: use interception only if it is
+                    # strictly not worse, OR interception cell is very close
+                    # to Ghost's current position (≤ 2 cells away)
+                    dist_inter_to_ghost = (
+                        abs(inter_target[0] - enemy_position[0])
+                        + abs(inter_target[1] - enemy_position[1])
+                    )
+                    if path_to_inter and (
+                        not path_to_direct
+                        or len(path_to_inter) <= len(path_to_direct)
+                        or dist_inter_to_ghost <= 2
+                    ):
+                        target = inter_target
+                        self.interception_used += 1
 
             if target is None:
                 target = enemy_position
@@ -202,11 +228,22 @@ class PacmanAgent(BasePacmanAgent):
         if my_position == target:
             return (Move.STAY, 1)
 
-        path = self._astar(
-            map_state,
-            my_position,
-            target
+        # ---- Path caching ----
+        path = None
+        cache_valid = (
+            self._cached_target == target
+            and self._cached_my_pos == my_position
+            and self._cached_path
         )
+        if cache_valid:
+            path = self._cached_path
+            self.path_cache_hit += 1
+        else:
+            path = self._astar(map_state, my_position, target)
+            self._cached_target = target
+            self._cached_path = path
+            self._cached_my_pos = my_position
+            self.path_cache_miss += 1
 
         if not path:
             return self._explore(
@@ -214,10 +251,35 @@ class PacmanAgent(BasePacmanAgent):
                 map_state
             )
 
-        return self._path_to_move(
-            path,
-            my_position
-        )
+        # Extract move + steps from path
+        result = self._path_to_move(path, my_position)
+
+        # ---- Trap pressure tie-break (disabled by default) ----
+        if self.enable_trap_pressure:
+            result = self._apply_trap_pressure(
+                map_state, my_position, target, path, result
+            )
+
+        # Update path cache: remove consumed steps and track expected position
+        if isinstance(result, tuple):
+            consumed = result[1]
+            mv = result[0]
+        else:
+            consumed = 1
+            mv = result
+        self._cached_path = path[consumed:]
+        # Compute expected position after move for next cache validation
+        exp_pos = my_position
+        for _ in range(consumed):
+            nxt = (exp_pos[0] + mv.value[0], exp_pos[1] + mv.value[1])
+            if 0 <= nxt[0] < len(map_state) and 0 <= nxt[1] < len(map_state[0]) \
+                    and map_state[nxt[0]][nxt[1]] == 0:
+                exp_pos = nxt
+            else:
+                break
+        self._cached_my_pos = exp_pos
+
+        return result
 
     def _astar(
         self,
@@ -427,31 +489,104 @@ class PacmanAgent(BasePacmanAgent):
             1
         )
 
-            exits = _cell_exits(nxt, ms)
+    # ------------------------------------------------------------------
+    # Ghost direction tracking
+    # ------------------------------------------------------------------
+    def _update_ghost_tracking(self, enemy_pos):
+        """Update direction streak from last known enemy position."""
+        if self.last_seen_enemy is None:
+            return
+        dr = enemy_pos[0] - self.last_seen_enemy[0]
+        dc = enemy_pos[1] - self.last_seen_enemy[1]
+        new_dir = (dr, dc)
+        if new_dir == self._enemy_direction and (dr != 0 or dc != 0):
+            self._direction_streak += 1
+        else:
+            self._enemy_direction = new_dir
+            self._direction_streak = 1 if (dr != 0 or dc != 0) else 0
 
-            # Is this a junction (>= 3 exits)?
+    # ------------------------------------------------------------------
+    # Interception target: project Ghost forward along stable direction
+    # ------------------------------------------------------------------
+    def _compute_interception_target(self, ms, enemy_pos, my_pos):
+        """Project Ghost up to 4 cells forward; return first junction or corridor cell."""
+        dr, dc = self._enemy_direction
+        cur_row, cur_col = enemy_pos
+        best = None
+
+        for i in range(1, 5):
+            nr = cur_row + dr * i
+            nc = cur_col + dc * i
+            if not (0 <= nr < len(ms) and 0 <= nc < len(ms[0])):
+                break
+            if ms[nr][nc] != 0:
+                break
+            nxt = (nr, nc)
+
+            exits = self._count_exits(ms, nxt)
             if exits >= 3:
-                p_to = pac_dist.get(nxt, 999)
-                g_to = ghost_dist.get(nxt, 999)
-                # Pacman speed-2: Pacman covers distance in ceil(p_to/2) turns
-                # Ghost covers distance in g_to turns (or step_ahead from current)
-                # Intercept if Pacman can reach in <= Ghost's arrival time
-                pac_turns = (p_to + 1) // 2
-                if pac_turns <= step_ahead + 1:  # +1 margin for lock
-                    return nxt
+                return nxt          # junction — best interception point
+            if exits == 2 and best is None:
+                best = nxt           # corridor cell — fallback
 
-            # Dead-end entrance (exits == 2 but on a corridor branch)
-            if exits == 2 and step_ahead >= 3:
-                # Check if this corridor is a trap for Ghost
-                p_to = pac_dist.get(nxt, 999)
-                g_to = ghost_dist.get(nxt, 999)
-                pac_turns = (p_to + 1) // 2
-                if pac_turns <= step_ahead:
-                    return nxt
+        return best  # may be None
 
-            cur = nxt
+    def _count_exits(self, ms, pos):
+        r, c = pos
+        exits = 0
+        if r > 0 and ms[r - 1][c] == 0:
+            exits += 1
+        if r < len(ms) - 1 and ms[r + 1][c] == 0:
+            exits += 1
+        if c > 0 and ms[r][c - 1] == 0:
+            exits += 1
+        if c < len(ms) - 1 and ms[r][c + 1] == 0:
+            exits += 1
+        return exits
 
-        return None
+    # ------------------------------------------------------------------
+    # Trap pressure: prefer moves closer to Ghost’s nearest junction
+    # ------------------------------------------------------------------
+    def _apply_trap_pressure(self, ms, my_pos, ghost_pos, path, move_result):
+        """If Pacman can move farther but path turns, check if continuing
+        straight pressures Ghost escape routes better.
+
+        Returns potentially adjusted (Move, steps).
+        """
+        if not isinstance(move_result, tuple):
+            return move_result
+        if move_result[1] >= self.pacman_speed:
+            return move_result  # already moving at max speed
+
+        if len(path) < 2:
+            return move_result
+
+        mv = move_result[0]
+        steps = move_result[1]
+
+        # Check if extending current direction would get closer to Ghost junctions
+        cur = my_pos
+        extra_step = steps  # already taking this many
+        nxt = (cur[0] + mv.value[0] * (extra_step + 1),
+               cur[1] + mv.value[1] * (extra_step + 1))
+
+        if not (0 <= nxt[0] < len(ms) and 0 <= nxt[1] < len(ms[0])):
+            return move_result
+        if ms[nxt[0]][nxt[1]] != 0:
+            return move_result
+
+        # Check if this extra straight cell is closer to Ghost
+        # or a junction near Ghost, compared to where path turns
+        dist_straight = abs(nxt[0] - ghost_pos[0]) + abs(nxt[1] - ghost_pos[1])
+        if len(path) > steps:
+            turn_cell = path[steps]
+            dist_turn = abs(turn_cell[0] - ghost_pos[0]) + abs(turn_cell[1] - ghost_pos[1])
+
+            # Prefer straight if it reduces distance to Ghost more
+            if dist_straight <= dist_turn:
+                return (mv, steps + 1)
+
+        return move_result
 
     # ------------------------------------------------------------------
     # Convert A* path → (Move, steps) action
