@@ -183,6 +183,9 @@ def pacman_reach_2(pos, ms):
 class GhostAgent(BaseGhostAgent):
     """SOTA Ghost: A* to safest cell + minimax evasion when cornered."""
 
+    # Class-level topology cache — keyed by map signature
+    _topology_cache: Dict[int, Dict] = {}
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._enemy: Optional[Tuple[int, int]] = None
@@ -193,6 +196,16 @@ class GhostAgent(BaseGhostAgent):
         self._open_cells: int = 0
         self._dead_ends: Set[Tuple] = set()
         self._initialized: bool = False
+        self.floodfill_rerank_used: int = 0
+        self.floodfill_rerank_skipped: int = 0
+        self.opening_escape_used: int = 0
+        self.opening_escape_skipped: int = 0
+        self.phase_strategy_used: int = 0
+        self.phase_strategy_skipped: int = 0
+        self.topology_cache_hits: int = 0
+        self.topology_cache_misses: int = 0
+        self._last_move: Optional[Move] = None
+        self._topo: Optional[Dict] = None
 
     # ------------------------------------------------------------------
     # Main step
@@ -229,21 +242,235 @@ class GhostAgent(BaseGhostAgent):
         gd = self._bfs.dist(map_state, me)
         bfs_d = pd.get(me, _manhattan(me, pac))
 
-        # Filter out recently visited cells (hard anti-oscillation)
+            # Filter out recently visited cells (hard anti-oscillation)
         safe_candidates = self._filter_oscillation(me, candidates)
 
-        # ---- Strategic: A* to farthest safe cell ----
-        if bfs_d > A_STAR_THRESHOLD:
-            result = self._strategic_move(map_state, me, pac, pd, gd, safe_candidates)
-            if result is not None:
-                return result
-            # Fallback: floodfill safety scoring when A* finds no good target
-            result = self._floodfill_move(map_state, me, pac, pd, safe_candidates)
-            if result is not None:
-                return result
+        # ---- Build candidate move via existing pipeline ----
+        chosen_move = None
+        OPENING_WINDOW = 10
 
-        # ---- Tactical: minimax evasion ----
-        return self._tactical_move(map_state, me, pac, pd, gd, safe_candidates, t0)
+        # Opening escape: compute but do NOT return early; let phase cross-check it
+        if step_number <= OPENING_WINDOW:
+            chosen_move = self._opening_escape_move(map_state, me, pac, pd, candidates)
+            if chosen_move is not None:
+                self.opening_escape_used += 1
+            else:
+                self.opening_escape_skipped += 1
+
+        # Strategic: A* to farthest safe cell
+        if chosen_move is None and bfs_d > A_STAR_THRESHOLD:
+            chosen_move = self._strategic_move(map_state, me, pac, pd, gd, safe_candidates)
+            if chosen_move is None:
+                chosen_move = self._floodfill_move(map_state, me, pac, pd, safe_candidates)
+
+        # Tactical: minimax evasion
+        if chosen_move is None:
+            chosen_move = self._tactical_move(map_state, me, pac, pd, gd, safe_candidates, t0)
+
+        # ---- Phase strategy: topology-aware cross-check ----
+        if chosen_move is not None:
+            topo = self._ensure_topology(map_state)
+            phase_move, phase_score, chosen_phase_score = self._phase_scoring_move(
+                map_state, me, pac, pd, gd, candidates, step_number,
+                topo, chosen_move
+            )
+
+            if phase_move is not None and phase_move != chosen_move:
+                chosen_nxt = _apply(me, chosen_move)
+                chosen_exits = _cell_exits(chosen_nxt, map_state)
+                chosen_bfs = pd.get(chosen_nxt, _manhattan(chosen_nxt, pac))
+                is_dangerous = (chosen_exits <= 1 or chosen_bfs <= 3)
+
+                PHASE_THRESHOLD = 20.0
+
+                if (step_number <= 60
+                        or is_dangerous
+                        or phase_score > chosen_phase_score + PHASE_THRESHOLD):
+                    self.phase_strategy_used += 1
+                    self._last_move = phase_move
+                    return phase_move
+                else:
+                    self.phase_strategy_skipped += 1
+            else:
+                self.phase_strategy_skipped += 1
+
+        # ---- Rerank: floodfill safety tie-breaker ----
+        return self._rerank_with_floodfill(
+            map_state, me, pac, pd, candidates, chosen_move
+        )
+
+    # ------------------------------------------------------------------
+    # Opening escape (step ≤ 10) — high-weight safety scorer
+    # ------------------------------------------------------------------
+    def _opening_escape_move(self, ms, me, pac, pd, candidates):
+        """Conservative opening strategy for the critical first 10 steps.
+
+        Uses higher weights than the normal scorer because early survival
+        is disproportionately important.
+        """
+        if not candidates:
+            return None
+
+        best_move = None
+        best_score = float("-inf")
+
+        for m in candidates:
+            nxt = _apply(me, m)
+            if _manhattan(nxt, pac) < 2:
+                continue
+
+            bfs_dist = pd.get(nxt, _manhattan(nxt, pac))
+
+            # Safe floodfill — cells Ghost reaches before speed‑2 Pacman
+            gd = self._bfs.dist(ms, nxt)
+            safe_count = 0
+            for _cell_key, g_val in gd.items():
+                if g_val > 15:
+                    continue
+                p_val = pd.get(_cell_key, 999)
+                if g_val < (p_val + 1) // 2:
+                    safe_count += 1
+
+            exits = _cell_exits(nxt, ms)
+            junction_bonus = 1 if exits >= 3 else 0
+            dead_end_penalty = 1 if exits <= 1 else 0
+            close_corridor_penalty = 1 if (exits == 2 and bfs_dist <= 6) else 0
+
+            score = (
+                100 * bfs_dist
+                + 2 * safe_count
+                + 40 * junction_bonus
+                - 120 * dead_end_penalty
+                - 60 * close_corridor_penalty
+            )
+
+            # Mild anti-backtrack: penalise reversing last move direction
+            if self._last_move is not None:
+                _reverse = {
+                    Move.UP: Move.DOWN,
+                    Move.DOWN: Move.UP,
+                    Move.LEFT: Move.RIGHT,
+                    Move.RIGHT: Move.LEFT,
+                }
+                if _reverse.get(m) == self._last_move:
+                    score -= 30
+
+            if score > best_score:
+                best_score = score
+                best_move = m
+
+        if best_move is not None:
+            self._last_move = best_move
+        return best_move
+
+    # ------------------------------------------------------------------
+    # Phase-based topology-aware scoring
+    # ------------------------------------------------------------------
+    def _phase_scoring_move(self, ms, me, pac, pd, gd, candidates, step_number,
+                            topo, chosen_move):
+        """Score every legal move with phase-appropriate weights + topology data.
+
+        Returns (best_phase_move, phase_score, chosen_score).
+        """
+        if not candidates:
+            return None, float("-inf"), float("-inf")
+
+        # Phase weights
+        if step_number <= 60:
+            w_dist, w_flood, w_junc = 120, 3, 60
+            w_de, w_corr, w_back = -150, -80, -40
+        elif step_number <= 140:
+            w_dist, w_flood, w_junc = 90, 2, 45
+            w_de, w_corr, w_back = -120, -50, -25
+        else:
+            w_dist, w_flood, w_junc = 150, 4, 30
+            w_de, w_corr, w_back = -200, -100, -10
+
+        _reverse = {
+            Move.UP: Move.DOWN, Move.DOWN: Move.UP,
+            Move.LEFT: Move.RIGHT, Move.RIGHT: Move.LEFT,
+        }
+
+        junctions = topo["junctions"]
+        de_depth = topo["dead_end_depth"]
+        jd_map = topo["junction_distance"]
+
+        best_move = None
+        best_score = float("-inf")
+        chosen_score = float("-inf")
+
+        for m in candidates:
+            nxt = _apply(me, m)
+            if _manhattan(nxt, pac) < 2:
+                if m == chosen_move:
+                    chosen_score = float("-inf")
+                continue
+
+            bfs_dist = pd.get(nxt, _manhattan(nxt, pac))
+
+            # Safe floodfill count from candidate destination
+            gd_local = self._bfs.dist(ms, nxt)
+            safe_count = 0
+            for cell, g_val in gd_local.items():
+                if g_val > 15:
+                    continue
+                p_val = pd.get(cell, 999)
+                if g_val < (p_val + 1) // 2:
+                    safe_count += 1
+
+            exits = _cell_exits(nxt, ms)
+
+            # --- Topology-aware penalties (differentiates from opening escape) ---
+            # Dead-end: penalty proportional to depth (capped at 5)
+            if exits <= 1:
+                dd = de_depth.get(nxt, 5)
+                dead_end_penalty = min(dd, 5)
+            else:
+                dead_end_penalty = 0
+
+            # Junction bonus
+            junction_bonus = 1 if exits >= 3 else 0
+
+            # Corridor risk: check if Pacman is close to either corridor exit
+            corridor_risk = 0
+            if exits == 2:
+                nb_cells = [_apply(nxt, mv) for mv in MOVE_ORDER
+                            if _valid(_apply(nxt, mv), ms)]
+                for nb in nb_cells:
+                    nb_exits = _cell_exits(nb, ms)
+                    if nb_exits >= 3:
+                        nb_pd = pd.get(nb, 999)
+                        if nb_pd <= bfs_dist + 3:
+                            corridor_risk += 1
+                if bfs_dist <= 6 and corridor_risk == 0:
+                    corridor_risk = 1
+
+            # Junction proximity bonus: closer to junction = more escape options
+            jd = jd_map.get(nxt, 10)
+            junction_prox_bonus = max(0, 5 - jd)  # 5 for junction, 0 for >=5 away
+
+            score = (
+                w_dist * bfs_dist
+                + w_flood * safe_count
+                + w_junc * junction_bonus
+                + w_de * dead_end_penalty
+                + w_corr * corridor_risk
+                + w_junc * junction_prox_bonus * 0.5  # scaled junction proximity
+            )
+
+            # Backtrack penalty
+            if self._last_move is not None:
+                if _reverse.get(m) == self._last_move:
+                    score += w_back
+
+            if m == chosen_move:
+                chosen_score = score
+
+            if score > best_score:
+                best_score = score
+                best_move = m
+
+        return best_move, best_score, chosen_score
 
     # ------------------------------------------------------------------
     # Strategic: identify farthest safe cell and A* to it
@@ -354,6 +581,51 @@ class GhostAgent(BaseGhostAgent):
                 best_move = m
 
         return best_move
+
+    def _rerank_with_floodfill(self, ms, me, pac, pd, candidates, chosen_move):
+        """Rerank the chosen move against floodfill-best among all candidates.
+
+        Returns chosen_move unchanged unless floodfill finds a significantly
+        safer alternative OR the chosen destination is dangerous.
+        """
+        if not candidates or chosen_move is None:
+            self.floodfill_rerank_skipped += 1
+            return chosen_move
+
+        # Score the currently chosen move's destination
+        chosen_nxt = _apply(me, chosen_move)
+        chosen_score = self._score_position(ms, chosen_nxt, pac, pd)
+
+        # Find the floodfill-best move among all legal candidates
+        best_move = chosen_move
+        best_score = chosen_score
+
+        for m in candidates:
+            nxt = _apply(me, m)
+            if _manhattan(nxt, pac) < 2:
+                continue
+            s = self._score_position(ms, nxt, pac, pd)
+            if s > best_score:
+                best_score = s
+                best_move = m
+
+        if best_move == chosen_move:
+            self.floodfill_rerank_skipped += 1
+            return chosen_move
+
+        # --- Override conditions ---
+        chosen_exits = _cell_exits(chosen_nxt, ms)
+        chosen_bfs = pd.get(chosen_nxt, _manhattan(chosen_nxt, pac))
+        is_dangerous = (chosen_exits <= 1 or chosen_bfs <= 3)
+
+        RERANK_THRESHOLD = 30.0
+
+        if best_score > chosen_score + RERANK_THRESHOLD or is_dangerous:
+            self.floodfill_rerank_used += 1
+            return best_move
+
+        self.floodfill_rerank_skipped += 1
+        return chosen_move
 
     # ------------------------------------------------------------------
     # Tactical: minimax alpha-beta for close-range evasion
@@ -488,6 +760,94 @@ class GhostAgent(BaseGhostAgent):
                     continue
                 if _cell_exits((r, c), ms) <= 1:
                     self._dead_ends.add((r, c))
+
+    # ------------------------------------------------------------------
+    # Static topology precompute (lazy, once per map signature)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _map_signature(ms):
+        h, w = _shape(ms)
+        rows = tuple(
+            tuple(int(_cell(ms, r, c)) for c in range(w))
+            for r in range(h)
+        )
+        return hash(rows)
+
+    def _ensure_topology(self, ms):
+        sig = self._map_signature(ms)
+        if sig in self._topology_cache:
+            self.topology_cache_hits += 1
+            return self._topology_cache[sig]
+
+        self.topology_cache_misses += 1
+        h, w = _shape(ms)
+
+        degree = {}
+        junctions = set()
+        corridors = set()
+        dead_ends = set()
+        open_cells = set()
+
+        for r in range(h):
+            for c in range(w):
+                if _cell(ms, r, c) == 1:
+                    continue
+                pos = (r, c)
+                exits = _cell_exits(pos, ms)
+                degree[pos] = exits
+                if exits >= 3:
+                    junctions.add(pos)
+                elif exits == 2:
+                    corridors.add(pos)
+                else:
+                    dead_ends.add(pos)
+                open_cells.add(pos)
+
+        # Dead-end depth: walk from each dead-end toward nearest junction
+        depth_map = {}
+        for de in dead_ends:
+            cur = de
+            depth = 0
+            visited = {de}
+            while cur not in junctions:
+                found_next = False
+                for m in MOVE_ORDER:
+                    nxt = _apply(cur, m)
+                    if nxt not in visited and _valid(nxt, ms):
+                        visited.add(nxt)
+                        cur = nxt
+                        depth += 1
+                        found_next = True
+                        break
+                if not found_next or depth > 20:
+                    break
+            depth_map[de] = depth
+
+        # Junction-distance map: BFS distance from each cell to nearest junction
+        jd_map = {}
+        q = deque()
+        for j in junctions:
+            jd_map[j] = 0
+            q.append(j)
+        while q:
+            cur = q.popleft()
+            for m in MOVE_ORDER:
+                nxt = _apply(cur, m)
+                if nxt not in jd_map and _valid(nxt, ms):
+                    jd_map[nxt] = jd_map[cur] + 1
+                    q.append(nxt)
+
+        topo = {
+            "degree": degree,
+            "junctions": junctions,
+            "corridors": corridors,
+            "dead_ends": dead_ends,
+            "open_cells": open_cells,
+            "dead_end_depth": depth_map,
+            "junction_distance": jd_map,
+        }
+        self._topology_cache[sig] = topo
+        return topo
 
     # ------------------------------------------------------------------
     # Exploration fallback

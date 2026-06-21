@@ -15,7 +15,18 @@ Môn học: **CSC14003 — Nhập môn Trí tuệ Nhân tạo**
 | **Seeker** (Người đi săn) | **PacmanAgent** | Đuổi bắt Ghost | Khoảng cách Manhattan `< 2` |
 | **Hider** (Người đi trốn) | **GhostAgent** | Sinh tồn đến hết trận | Sống sót qua `max_steps` (200 bước) |
 
-### 1.2. Đặc tả Kỹ thuật
+### 1.2. Tiêu chí Chấm điểm
+
+| Hạng mục | Điểm |
+|----------|------|
+| Hoàn thiện cài đặt giải thuật | 3 |
+| Xếp hạng trong lần nộp đầu tiên | Tối đa 3 |
+| Xếp hạng trong lần nộp tối ưu | Tối đa 4 |
+
+**Tie-break**: Team có chênh lệch giữa số bước trung bình Pacman và Ghost thấp hơn sẽ
+xếp hạng cao hơn (xem mục 4.8).
+
+### 1.3. Đặc tả Kỹ thuật
 
 | Thành phần | Mô tả |
 |------------|-------|
@@ -23,7 +34,7 @@ Môn học: **CSC14003 — Nhập môn Trí tuệ Nhân tạo**
 | **Chế độ quan sát** | Fog-of-war **TẮT**. Hai agent luôn nhìn thấy vị trí của nhau (Perfect Information) |
 | **Cơ chế di chuyển** | **Đồng thời (Simultaneous)** — cả hai nhận state, quyết định, rồi cùng cập nhật vị trí trong 1 step. Không ai thấy nước đi của đối phương trước khi chọn |
 
-### 1.3. Khác biệt Tốc độ
+### 1.4. Khác biệt Tốc độ
 
 | | Pacman (Seeker) | Ghost (Hider) |
 |---|---|---|
@@ -205,7 +216,7 @@ Có 2 cách chạy, chọn 1 trong 2:
 ### 4.1. Đấu giữa Pacman (24127561) và Ghost (24127192)
 
 ```bash
-# === Benchmark 10 trận (chạy từ repo root) ===
+# === Benchmark 10 trận (deterministic, chạy từ repo root) ===
 python pacman/scripts/benchmark_agents.py --seek 24127561 --hide 24127192 --games 10 --max-steps 200
 
 # === Chạy 1 trận có hiển thị trực quan (terminal) ===
@@ -216,6 +227,13 @@ python arena.py --seek 24127561 --hide 24127192
 cd pacman/src
 python arena.py --seek 24127561 --hide 24127192 --no-viz --start-mode stochastic --max-steps 200
 ```
+
+> **Lưu ý về `benchmark_agents.py`:**
+> - Script hiện chỉ hỗ trợ chế độ deterministic (không có flag `--start-mode`).
+> - Output chỉ báo cáo `return_code` của từng trận (0 = chạy thành công), chưa tự động
+>   thống kê thắng/thua hay số bước trung bình. Cần đọc output arena để lấy kết quả.
+> - Để benchmark với stochastic start, dùng vòng lặp `arena.py` thủ công (xem 4.7).
+
 
 ### 4.2. Test Pacman (24127561) với Ghost mẫu của giảng viên
 
@@ -289,6 +307,55 @@ python arena.py --seek 24127561 --hide 24127192 --step-timeout 1.0
 ```
 
 > **Lưu ý:** `--step-timeout` dùng `SIGALRM` nên **không hoạt động trên Windows**. Trên Windows, warning sẽ hiện ra và timeout bị vô hiệu hóa.
+
+### 4.7. Benchmark Stochastic Thủ công
+
+Do `benchmark_agents.py` chưa hỗ trợ `--start-mode stochastic`, để chạy benchmark với
+vị trí khởi đầu ngẫu nhiên, dùng vòng lặp `arena.py`:
+
+**Windows (PowerShell):**
+```powershell
+cd pacman/src
+$wins = 0; $steps = 0; 1..20 | ForEach-Object {
+    $out = python arena.py --seek 24127561 --hide 24127192 --no-viz --start-mode stochastic --max-steps 200 2>&1
+    if ($out -match "WINNER: 24127192") { $wins++ }
+    if ($out -match "Total Steps: (\d+)") { $steps += [int]$Matches[1] }
+    Write-Host "game $_ done"
+}; Write-Host "Ghost wins: $wins/20, total steps: $steps"
+```
+
+**Linux/macOS (Bash):**
+```bash
+cd pacman/src
+wins=0; steps=0; for i in $(seq 1 20); do
+  out=$(python arena.py --seek 24127561 --hide 24127192 --no-viz --start-mode stochastic --max-steps 200 2>&1)
+  echo "$out" | grep -q "WINNER: 24127192" && wins=$((wins + 1))
+  s=$(echo "$out" | grep -oP 'Total Steps:\s*\K\d+')
+  steps=$((steps + s))
+  echo "game $i done"
+done; echo "Ghost wins: $wins/20, total steps: $steps"
+```
+
+### 4.8. Cách tính Tỷ lệ Thắng & Tie-Break
+
+Theo quy định của BTC:
+
+| Vai trò | Công thức tỷ lệ thắng |
+|---------|------------------------|
+| **Ghost (Hider)** | `winrate_hide = Số trận Ghost thắng / Tổng số trận làm Ghost` |
+| **Pacman (Seeker)** | `winrate_seek = Số trận Pacman thắng / Tổng số trận làm Pacman` |
+
+**Tie-break:** Nếu 2 team có tỷ lệ thắng bằng nhau, team nào có **chênh lệch giữa số bước
+trung bình của Pacman và Ghost thấp hơn** sẽ xếp hạng cao hơn.
+
+```
+diff = avg_steps_pacman - avg_steps_ghost   # Càng thấp càng tốt
+```
+
+Điều này có nghĩa:
+- Pacman cần bắt Ghost **càng nhanh càng tốt** (giảm avg_steps_pacman)
+- Ghost cần sống **càng lâu càng tốt** (tăng avg_steps_ghost)
+- Cả hai chỉ số đều quan trọng như nhau cho thứ hạng cuối cùng
 
 ---
 
