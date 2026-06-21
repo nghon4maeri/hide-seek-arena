@@ -181,7 +181,7 @@ class GhostAgent(BaseGhostAgent):
             self._loop_set = set(max(cycles, key=len))
 
     @lru_cache(maxsize=100000)
-    def _tony_astar(self, pp, target):
+    def _cached_astar(self, pp, target):
         if pp == target: return ()
         rows, cols = len(self._static_map), len(self._static_map[0])
         def heuristic(a, b): return abs(a[0] - b[0]) + abs(a[1] - b[1])
@@ -214,7 +214,7 @@ class GhostAgent(BaseGhostAgent):
                         heapq.heappush(open_set, (f_score, neighbor))
         return ()
 
-    def _predict_tony(self, pp, gp, last_gp):
+    def _predict_astar_seeker(self, pp, gp, last_gp):
         ms = self._static_map
         target = gp
         if last_gp is not None:
@@ -223,7 +223,7 @@ class GhostAgent(BaseGhostAgent):
             if 0 <= pr < len(ms) and 0 <= pc < len(ms[0]) and ms[pr][pc] == 0:
                 target = (pr, pc)
         if pp == target: return pp
-        path = self._tony_astar(pp, target)
+        path = self._cached_astar(pp, target)
         if not path: return pp
         first = path[0]
         dr, dc = first[0] - pp[0], first[1] - pp[1]
@@ -238,7 +238,7 @@ class GhostAgent(BaseGhostAgent):
         return current
 
     def _eval(self, gp, pp):
-        path = self._tony_astar(gp, pp)
+        path = self._cached_astar(gp, pp)
         true_dist = len(path) if path else 99
         score = true_dist * 100
         if gp in self._tp.deb: score -= 5000
@@ -246,11 +246,11 @@ class GhostAgent(BaseGhostAgent):
         if gp in self._loop_set: score += 500
         return score
 
-    def search_survival(self, ms, gp, pp, last_gp, depth, max_depth, t0):
+    def _iterative_deep_search(self, ms, gp, pp, last_gp, depth, max_depth, t0):
         if time.time() - t0 > TIME_BUDGET * 0.85: return None, None
         if depth == max_depth: return self._eval(gp, pp), None
         
-        np_pos = self._usl.predict(ms, pp, gp, last_gp, self._predict_tony)
+        np_pos = self._usl.predict(ms, pp, gp, last_gp, self._predict_astar_seeker)
         best_score = float('-inf')
         best_move = None
         
@@ -263,7 +263,7 @@ class GhostAgent(BaseGhostAgent):
             if _manhattan(ng, np_pos) < 2:
                 score = -100000 + (depth + 1) * 1000
             else:
-                score, _ = self.search_survival(ms, ng, np_pos, gp, depth + 1, max_depth, t0)
+                score, _ = self._iterative_deep_search(ms, ng, np_pos, gp, depth + 1, max_depth, t0)
                 if score is None: return None, None
             if score > best_score:
                 best_score = score
@@ -293,7 +293,7 @@ class GhostAgent(BaseGhostAgent):
                 else:
                     self._usl.observe(last_state, actual_action)
 
-            self._predicted_pp = self._usl.predict(ms, pac, me, last_gp, self._predict_tony)
+            self._predicted_pp = self._usl.predict(ms, pac, me, last_gp, self._predict_astar_seeker)
             self._last_pp = pac
         else:
             pac = None
@@ -308,7 +308,7 @@ class GhostAgent(BaseGhostAgent):
         best_move_overall = cands[0]
         # iterative deepening
         for depth in range(2, 20, 2):
-            score, move = self.search_survival(ms, me, pac, last_gp, 0, depth, t0)
+            score, move = self._iterative_deep_search(ms, me, pac, last_gp, 0, depth, t0)
             if score is None: break # Timeout
             if move is not None: best_move_overall = move
             if score < -50000: break # Inevitable death
