@@ -51,7 +51,7 @@ class Arena:
                  submissions_dir: str = "../submissions",
                  max_steps: int = 200,
                  visualize: bool = True,
-                 delay: float = 0.1,
+                 delay: float = 0.0,
                  step_timeout: Optional[float] = 3.0,
                  deterministic_starts: bool = True,
                  capture_distance_threshold: int = 1,
@@ -254,7 +254,8 @@ class Arena:
             
             # Visualize if enabled
             if self.visualize:
-                time.sleep(self.delay)
+                if self.delay > 0:
+                    time.sleep(self.delay)
                 self.visualizer.display(
                     self.env, step, self.pacman_id, self.ghost_id,
                     pacman_action, ghost_move, result if game_over else None
@@ -356,8 +357,8 @@ Examples:
     parser.add_argument(
         '--delay',
         type=float,
-        default=0.1,
-        help='Delay between steps in seconds (default: 0.1)'
+        default=0.0,
+        help='Delay between steps in seconds (default: 0.0)'
     )
 
     parser.add_argument(
