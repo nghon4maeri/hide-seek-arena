@@ -213,15 +213,52 @@ Có 2 cách chạy, chọn 1 trong 2:
 
 ---
 
+### 4.0. Chạy có Trực quan (Visualization)
+
+Xem agent chạy trực tiếp trên terminal — hữu ích để debug và hiểu hành vi agent.
+
+```bash
+cd pacman/src
+
+# === Chạy mặc định (delay 0.1s giữa các bước) ===
+python arena.py --seek 24127561 --hide 24127192
+
+# === Xem chậm để debug (delay 0.5s) ===
+python arena.py --seek 24127561 --hide 24127192 --delay 0.5
+
+# === Xem rất chậm (delay 1.0s) ===
+python arena.py --seek 24127561 --hide 24127192 --delay 1.0
+
+# === Pacman 24127457 vs Ghost example_student ===
+python arena.py --seek 24127457 --hide example_student --delay 0.3
+
+# === Pacman example_student vs Ghost 24127457 ===
+python arena.py --seek example_student --hide 24127457 --delay 0.3
+
+# === Self-play 24127457 ===
+python arena.py --seek 24127457 --hide 24127457 --delay 0.3
+```
+
+| Flag | Mặc định | Ý nghĩa |
+|------|----------|---------|
+| `--delay` | `0.1` | Giây chờ giữa mỗi step (tăng để xem chậm) |
+| `--no-viz` | tắt | Tắt hiển thị, chỉ in kết quả cuối |
+| `--max-steps` | `200` | Giới hạn số bước tối đa |
+
+> **Mẹo:** Luôn chạy thử với `--delay 0.3` hoặc `--delay 0.5` khi mới code để quan sát
+> hành vi agent. Khi đã OK thì thêm `--no-viz` để benchmark nhanh.
+
+---
+
 ### 4.1. Đấu giữa Pacman (24127561) và Ghost (24127192)
 
 ```bash
 # === Benchmark 10 trận (deterministic, chạy từ repo root) ===
 python pacman/scripts/benchmark_agents.py --seek 24127561 --hide 24127192 --games 10 --max-steps 200
 
-# === Chạy 1 trận có hiển thị trực quan (terminal) ===
+# === Chạy 1 trận không hiển thị, vị trí cố định ===
 cd pacman/src
-python arena.py --seek 24127561 --hide 24127192
+python arena.py --seek 24127561 --hide 24127192 --no-viz --max-steps 200
 
 # === Chạy 1 trận không hiển thị, vị trí ngẫu nhiên ===
 cd pacman/src
