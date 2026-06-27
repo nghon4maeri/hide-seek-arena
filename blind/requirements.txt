@@ -11,3 +11,4 @@ pytest>=7.0.0
 # Uncomment and install if your agent imports them:
 # pandas>=1.3.0
 # scipy>=1.7.0
+torch
