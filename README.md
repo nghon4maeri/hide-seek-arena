@@ -2,7 +2,7 @@
 
 **CSC14003 — Introduction to Artificial Intelligence**
 
-A full-stack platform for adversarial AI agent matches on a static 22×21 grid map, featuring a TypeScript backend orchestrator, React visualization dashboard, and Python agent frameworks for two distinct labs.
+A full-stack platform for adversarial AI agent matches on a static 22×21 grid map
 
 <p align="center">
   <img src="visualizer/public/assets/AI-lab1.gif" alt="Lab 1 Showcase" width="48%" />
