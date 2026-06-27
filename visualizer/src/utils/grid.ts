@@ -1,11 +1,11 @@
-import type { Position } from "../types/trace";
+import type { Position } from "../types/replay";
 
 export const actionDelta: Record<string, Position> = {
   UP: [-1, 0],
   DOWN: [1, 0],
   LEFT: [0, -1],
   RIGHT: [0, 1],
-  STAY: [0, 0]
+  STAY: [0, 0],
 };
 
 export function keyOf(pos: Position): string {
@@ -23,7 +23,14 @@ export function clampFrame(frame: number, max: number): number {
 
 export function maxSearchFrames(trace: any): number {
   const bfs = trace?.bfs?.explored_order?.length ?? 0;
-  const flood = Math.max(trace?.flood_fill?.safe_cells?.length ?? 0, trace?.flood_fill?.expansion_order?.length ?? 0);
-  const astar = Math.max(trace?.astar?.frames?.length ?? 0, trace?.astar?.open_set?.length ?? 0, trace?.astar?.closed_set?.length ?? 0);
+  const flood = Math.max(
+    trace?.flood_fill?.safe_cells?.length ?? 0,
+    trace?.flood_fill?.expansion_order?.length ?? 0
+  );
+  const astar = Math.max(
+    trace?.astar?.frames?.length ?? 0,
+    trace?.astar?.open_set?.length ?? 0,
+    trace?.astar?.closed_set?.length ?? 0
+  );
   return Math.max(1, bfs, flood, astar);
 }

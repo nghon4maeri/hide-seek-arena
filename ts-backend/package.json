@@ -1,16 +1,20 @@
 {
   "name": "hide-seek-ts-backend",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "generate-replay": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "generate-replay": "tsx src/index.ts --generate-replay",
     "generate-balanced": "tsx src/index.ts --scenario balanced"
+  },
+  "dependencies": {
+    "tsx": "^4.19.2"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
-    "tsx": "^4.19.2",
     "typescript": "^5.6.3"
   }
 }

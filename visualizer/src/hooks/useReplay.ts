@@ -13,7 +13,9 @@ export function useReplay(url = "/match_log.json") {
         return response.json();
       })
       .then((data: ReplayLog) => {
-        if (!cancelled) setReplay(data);
+        if (!cancelled) {
+          setReplay(data);
+        }
       })
       .catch((err: Error) => {
         if (!cancelled) setError(err.message);

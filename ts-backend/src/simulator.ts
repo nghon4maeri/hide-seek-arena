@@ -1,92 +1,234 @@
-import type { Move, Position, ReplayLog } from "./types.js";
-import { manhattan, step } from "./movement.js";
+import type { Move, Position, MatchConfig, ReplayLog, Winner } from "./types.js";
+import { DEFAULT_CONFIG } from "./types.js";
+import { manhattan, step, applySteps, getRandomPassable, computeFogGrid } from "./movement.js";
 import { SearchBoard } from "./search/bfs.js";
 import { HideAgent } from "./agents/hideAgent.js";
 import { SeekAgent } from "./agents/seekAgent.js";
 import { MatchLogger } from "./matchLogger.js";
 import { parseOfficialMap } from "./officialMap.js";
+import { PythonBridge, type PythonStepData, type PythonEvent } from "./pythonBridge.js";
 
-export interface SimulationOptions {
-  maxSteps?: number;
-  scenario?: "default" | "balanced";
+export interface SimulationTick {
+  stepNumber: number;
+  pacman: [number, number];
+  ghost: [number, number];
+  pacmanAction: string;
+  ghostAction: string;
+  pacmanSteps: number;
+  manhattanDistance: number;
+  status: "running" | "pacman_wins" | "ghost_wins";
 }
 
-export interface SimulationSummary {
-  replay: ReplayLog;
-  pacmanActions: Move[];
-  ghostActions: Move[];
-  winner: "hide" | "seek";
-}
+export class Simulator {
+  board: SearchBoard;
+  private seekAgent: SeekAgent;
+  private hideAgent: HideAgent;
+  logger: MatchLogger;
+  private pythonBridge: PythonBridge | null = null;
 
-export function runSimulation(options: SimulationOptions = {}): SimulationSummary {
-  const { grid, pacmanStart, ghostStart } = parseOfficialMap();
-  const maxSteps = options.maxSteps ?? (options.scenario === "balanced" ? 60 : 40);
-  const hideAgent = new HideAgent();
-  const seekAgent = new SeekAgent();
-  const logger = new MatchLogger(grid, pacmanStart, ghostStart);
-  let pacman: Position = [...pacmanStart];
-  let ghost: Position = [...ghostStart];
-  const pacmanActions: Move[] = [];
-  const ghostActions: Move[] = [];
-  let winner: "hide" | "seek" = "hide";
+  pacman: Position;
+  ghost: Position;
+  stepNumber = 0;
+  config: MatchConfig;
+  finished = false;
+  winner: Winner = null;
 
-  for (let stepNumber = 0; stepNumber < maxSteps; stepNumber += 1) {
-    const board = new SearchBoard(grid);
-    const hide = hideAgent.decide(board, pacman, ghost, stepNumber);
-    const seek = seekAgent.decide(board, ghost, pacman, stepNumber);
-    let pacmanAction = hide.action;
-    let ghostAction = seek.action;
+  // Python bridge: pre-collected steps
+  private pythonSteps: PythonStepData[] = [];
+  private pythonIndex = 0;
 
-    if (options.scenario === "balanced" && stepNumber < 10 && pacmanAction === "STAY") {
-      pacmanAction = chooseBalancedMove(board, pacman, ghost);
-    }
-
-    pacmanActions.push(pacmanAction);
-    ghostActions.push(ghostAction);
-    const pacmanNext = step(grid, pacman, pacmanAction);
-    const ghostNext = step(grid, ghost, ghostAction);
-    const status = manhattan(pacmanNext, ghostNext) < 2 ? "seek_wins" : stepNumber === maxSteps - 1 ? "hide_wins" : "running";
-
-    logger.log(
-      stepNumber,
-      pacman,
-      ghost,
-      {
-        action: pacmanAction,
-        candidateScores: hide.candidateScores,
-        exploredNodes: hide.exploredNodes,
-        predictedPath: hide.predictedPath,
-        score: hide.score,
-        algorithm: "BFS + Flood Fill + Minimax",
-        explanation: hide.explanation
-      },
-      {
-        action: ghostAction,
-        candidateScores: seek.candidateScores,
-        exploredNodes: seek.exploredNodes,
-        predictedPath: seek.predictedPath,
-        score: seek.score,
-        algorithm: "A* + BFS + Interception",
-        explanation: seek.explanation
-      },
-      status
-    );
-
-    pacman = pacmanNext;
-    ghost = ghostNext;
-    if (status === "seek_wins") {
-      winner = "seek";
-      break;
-    }
+  constructor(config: Partial<MatchConfig> = {}) {
+    this.config = { ...DEFAULT_CONFIG, ...config };
+    const { grid, pacmanStart, ghostStart } = parseOfficialMap();
+    this.board = new SearchBoard(grid);
+    this.seekAgent = new SeekAgent(this.config.pacmanSpeed);
+    this.hideAgent = new HideAgent(this.config.pacmanSpeed);
+    this.pacman = this.config.randomSpawn ? getRandomPassable(grid) : ([...pacmanStart] as Position);
+    this.ghost = this.config.randomSpawn ? getRandomPassable(grid) : ([...ghostStart] as Position);
+    this.logger = new MatchLogger(grid, this.pacman, this.ghost, this.config.labId, this.config);
   }
 
-  return { replay: logger.toJSON(), pacmanActions, ghostActions, winner };
-}
+  usesPython(): boolean {
+    return this.config.engine === "python" || this.config.engine === "hybrid";
+  }
 
-function chooseBalancedMove(board: SearchBoard, pacman: Position, ghost: Position): Move {
-  const moves: Move[] = ["UP", "LEFT", "RIGHT", "DOWN"];
-  return moves
-    .map((move) => ({ move, next: step(board.grid, pacman, move) }))
-    .filter(({ next }) => !(next[0] === pacman[0] && next[1] === pacman[1]))
-    .sort((a, b) => board.distance(b.next, ghost) - board.distance(a.next, ghost))[0]?.move ?? "STAY";
+  async initPythonBridge(): Promise<void> {
+    if (!this.usesPython()) return;
+
+    const extraArgs = [
+      "--max-steps", String(this.config.maxSteps),
+      "--capture-distance", String(this.config.captureDistance),
+      "--pacman-speed", String(this.config.pacmanSpeed),
+      "--pacman-obs-radius", String(this.config.pacmanObsRadius),
+      "--ghost-obs-radius", String(this.config.ghostObsRadius),
+    ];
+    if (this.config.randomSpawn) extraArgs.push("--random-spawn");
+
+    this.pythonBridge = new PythonBridge(
+      this.config.agentPacman.replace(/\s*\(built-in\)\s*/, "").trim() || "team_submission",
+      this.config.agentGhost.replace(/\s*\(built-in\)\s*/, "").trim() || "team_submission",
+      this.config.labId,
+      extraArgs
+    );
+
+    this.pythonBridge.onEvent((event: PythonEvent) => {
+      if (event.type === "init") {
+        // Use Python's grid and start positions
+        const d = event.data;
+        this.board = new SearchBoard(d.grid as unknown as (0 | 1)[][]);
+        if (d.pacmanStart) this.pacman = d.pacmanStart;
+        if (d.ghostStart) this.ghost = d.ghostStart;
+        this.logger = new MatchLogger(
+          this.board.grid,
+          this.pacman,
+          this.ghost,
+          this.config.labId,
+          this.config
+        );
+      } else if (event.type === "step") {
+        this.pythonSteps.push(event.data);
+      } else if (event.type === "end") {
+        // Mark as finished
+      } else if (event.type === "error") {
+        console.error(`[Simulator] Python error: ${event.message}`);
+      }
+    });
+
+    await this.pythonBridge.start();
+  }
+
+  hasPythonStep(): boolean {
+    return this.pythonIndex < this.pythonSteps.length;
+  }
+
+  /** Tick from Python bridge — drains pre-collected step data */
+  tickPython(): SimulationTick | null {
+    if (this.pythonIndex >= this.pythonSteps.length) return null;
+    const s = this.pythonSteps[this.pythonIndex];
+    this.pythonIndex += 1;
+    this.stepNumber = s.stepNumber;
+    this.pacman = s.pacmanPos;
+    this.ghost = s.ghostPos;
+
+    let status: SimulationTick["status"] = s.status;
+    if (s.status === "pacman_wins" || s.status === "ghost_wins") {
+      this.finished = true;
+      this.winner = s.status === "pacman_wins" ? "pacman" : "ghost";
+    } else if (s.stepNumber >= this.config.maxSteps) {
+      status = "ghost_wins";
+      this.finished = true;
+      this.winner = "ghost";
+    }
+
+    return {
+      stepNumber: s.stepNumber,
+      pacman: s.pacmanPos,
+      ghost: s.ghostPos,
+      pacmanAction: s.pacmanAction,
+      ghostAction: s.ghostAction,
+      pacmanSteps: s.pacmanSteps || 1,
+      manhattanDistance: s.manhattanDistance,
+      status,
+    };
+  }
+
+  /** Tick from TS agents — computes a single step */
+  tickTS(): SimulationTick {
+    const board = new SearchBoard(this.board.grid);
+    if (this.config.labId === "lab2") {
+      const pacmanFog = computeFogGrid(this.board.grid, this.pacman, this.config.pacmanObsRadius, true);
+      const ghostFog = computeFogGrid(this.board.grid, this.ghost, this.config.ghostObsRadius, true);
+      const pacmanSeesGhost = manhattan(this.pacman, this.ghost) <= this.config.pacmanObsRadius;
+      const ghostSeesPacman = manhattan(this.ghost, this.pacman) <= this.config.ghostObsRadius;
+
+      const seek = this.seekAgent.decide(
+        board, this.pacman,
+        pacmanSeesGhost ? this.ghost : this.ghost,
+        this.stepNumber
+      );
+      const hide = this.hideAgent.decide(
+        board, this.ghost,
+        ghostSeesPacman ? this.pacman : this.pacman,
+        this.stepNumber
+      );
+      return this.applyTSActions(seek.action, hide.action, seek.steps ?? this.config.pacmanSpeed);
+    }
+
+    const seek = this.seekAgent.decide(board, this.pacman, this.ghost, this.stepNumber);
+    const hide = this.hideAgent.decide(board, this.ghost, this.pacman, this.stepNumber);
+    return this.applyTSActions(seek.action, hide.action, seek.steps ?? this.config.pacmanSpeed);
+  }
+
+  private applyTSActions(pacmanAction: Move, ghostAction: Move, pacmanSteps: number): SimulationTick {
+    const pacmanNext = applySteps(this.board.grid, this.pacman, pacmanAction, pacmanSteps);
+    const ghostNext = step(this.board.grid, this.ghost, ghostAction);
+    const dist = manhattan(pacmanNext, ghostNext);
+    let status: SimulationTick["status"] = "running";
+
+    if (dist < this.config.captureDistance) {
+      status = "pacman_wins";
+      this.finished = true;
+      this.winner = "pacman";
+    } else if (this.stepNumber >= this.config.maxSteps - 1) {
+      status = "ghost_wins";
+      this.finished = true;
+      this.winner = "ghost";
+    }
+
+    return {
+      stepNumber: this.stepNumber,
+      pacman: pacmanNext,
+      ghost: ghostNext,
+      pacmanAction,
+      ghostAction,
+      pacmanSteps,
+      manhattanDistance: dist,
+      status,
+    };
+  }
+
+  logTick(tick: SimulationTick): void {
+    this.logger.log(
+      tick.stepNumber,
+      tick.pacman,
+      tick.ghost,
+      {
+        action: tick.pacmanAction || "STAY",
+        candidateScores: {},
+        exploredNodes: [],
+        predictedPath: [],
+        score: 0,
+        algorithm: "Python Arena",
+        explanation: `Pacman(Seeker) ${tick.pacmanAction}${tick.pacmanSteps > 1 ? ` x${tick.pacmanSteps}` : ""}`,
+      },
+      {
+        action: tick.ghostAction || "STAY",
+        candidateScores: {},
+        exploredNodes: [],
+        predictedPath: [],
+        score: 0,
+        algorithm: "Python Arena",
+        explanation: `Ghost(Hider) ${tick.ghostAction}`,
+      },
+      tick.status
+    );
+  }
+
+  commitTS(tick: SimulationTick): void {
+    this.pacman = tick.pacman;
+    this.ghost = tick.ghost;
+    this.stepNumber += 1;
+  }
+
+  getReplay(): ReplayLog {
+    return this.logger.toJSON();
+  }
+
+  isFinished(): boolean {
+    return this.finished;
+  }
+
+  stop(): void {
+    this.pythonBridge?.stop();
+  }
 }

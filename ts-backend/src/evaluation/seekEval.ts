@@ -4,7 +4,14 @@ import { manhattan } from "../movement.js";
 import type { SearchBoard } from "../search/bfs.js";
 import { safeArea } from "../search/floodFill.js";
 
-export function evaluateSeek(board: SearchBoard, ghost: Position, pacman: Position, escapeTargets: Position[], stepNumber: number, repeat = 0): number {
+export function evaluateSeek(
+  board: SearchBoard,
+  ghost: Position,
+  pacman: Position,
+  escapeTargets: Position[],
+  stepNumber: number,
+  repeat = 0
+): number {
   const dist = board.distance(ghost, pacman);
   const nearestEscape = Math.min(...escapeTargets.map((pos) => board.distance(ghost, pos)), INF);
   const areaAfter = safeArea(board, pacman, ghost, 10, 1);
