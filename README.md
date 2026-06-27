@@ -20,7 +20,6 @@ A full-stack platform for adversarial AI agent matches on a static 22×21 grid m
 5. [Lab 2 — POMDP / Blind Adversary](#lab-2--pomdp--blind-adversary)
 6. [Running the TypeScript UI & Backend](#running-the-typescript-ui--backend)
 7. [Running Python Labs Directly](#running-python-labs-directly)
-8. [API Reference](#api-reference)
 9. [Techniques Used](#techniques-used)
 10. [Modification Restrictions](#modification-restrictions)
 11. [Performance Constraints](#performance-constraints)
@@ -52,7 +51,7 @@ Two AI agents compete on a static Pacman-style grid map:
 
 ---
 
-## Quick Start
+## Quick Start (Optional)
 
 ### 1. Install Python dependencies
 
