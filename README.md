@@ -1,620 +1,531 @@
-# Pacman vs Ghost Arena
+# Hide & Seek Arena — AI Agent Competition Platform
 
-Welcome to the Pacman vs Ghost Arena! This guide will help you implement your own AI agents using search algorithms.
+**CSC14003 — Introduction to Artificial Intelligence**
+
+A full-stack platform for adversarial AI agent matches on a static 22×21 grid map, featuring a TypeScript backend orchestrator, React visualization dashboard, and Python agent frameworks for two distinct labs.
+
+<p align="center">
+  <img src="visualizer/public/assets/AI-lab1.gif" alt="Lab 1 Showcase" width="48%" />
+  <img src="visualizer/public/assets/AI-lab2.gif" alt="Lab 2 Showcase" width="48%" />
+</p>
 
 ---
 
 ## Table of Contents
 
-1. [Quick Start](#quick-start)
-2. [Installation](#installation)
-3. [Understanding the Game](#understanding-the-game)
-4. [Creating Your Agent](#creating-your-agent)
-5. [Implementing Search Algorithms](#implementing-search-algorithms)
-6. [Testing Your Agent](#testing-your-agent)
-7. [Debugging Tips](#debugging-tips)
-8. [Common Errors](#common-errors)
-9. [Advanced Strategies](#advanced-strategies)
+1. [Overview](#overview)
+2. [System Architecture](#system-architecture)
+3. [Quick Start](#quick-start)
+4. [Lab 1 — Adversarial Search](#lab-1--adversarial-search)
+5. [Lab 2 — POMDP / Blind Adversary](#lab-2--pomdp--blind-adversary)
+6. [Running the TypeScript UI & Backend](#running-the-typescript-ui--backend)
+7. [Running Python Labs Directly](#running-python-labs-directly)
+8. [API Reference](#api-reference)
+9. [Techniques Used](#techniques-used)
+10. [Modification Restrictions](#modification-restrictions)
+11. [Performance Constraints](#performance-constraints)
+
+---
+
+## Overview
+
+Two AI agents compete on a static Pacman-style grid map:
+
+| Role | Agent Name | Objective | Win Condition |
+|------|------------|-----------|---------------|
+| **Seeker** | PacmanAgent | Chase and capture the Ghost | Manhattan distance < `captureDistance` (default 2) |
+| **Hider** | GhostAgent | Evade and survive all steps | Survive all `maxSteps` (default 200) |
+
+**Important naming convention:** Inside `pacman/` and `blind/` lab workspaces, `PacmanAgent = Seeker`, `GhostAgent = Hider`. The root `agent.py` tournament entry uses the opposite naming — do not let this confuse you when working inside the labs.
+
+**Movement model:**
+- **Pacman (Seeker):** returns `Move` or `(Move, steps)` with `1 ≤ steps ≤ pacmanSpeed` (default 2). Straight-line only, stops at walls.
+- **Ghost (Hider):** returns `Move` only. Returning a tuple or string is an instant forfeit.
+- Turns are **synchronous** — both agents move simultaneously; you cannot react to the opponent's current move.
+
+### Two Labs
+
+| Lab | Name | Observability | Key Challenge |
+|-----|------|---------------|---------------|
+| **Lab 1** | Adversarial Search | Full (perfect info) | Minimax, Alpha-Beta, A*, heuristic evaluation |
+| **Lab 2** | POMDP / Blind Adversary | Partial (fog-of-war) | Belief-state tracking, particle filters, exploration |
 
 ---
 
 ## Quick Start
 
-### 1. Create Your Submission Folder
+### 1. Install Python dependencies
 
 ```bash
-cd submissions
-mkdir <your_student_id>
-```
-
-Replace `<your_student_id>` with your actual student ID (e.g., `student_001`, `alice`, `john_doe`)
-
-### 2. Copy the Template
-
-```bash
-cp TEMPLATE_agent.py <your_student_id>/agent.py
-```
-
-### 3. Edit Your Agent
-
-Open `submissions/<your_student_id>/agent.py` in your favorite editor and implement your search algorithm.
-
-### 4. Test Your Agent
-
-```bash
-cd ../src
-python arena.py --seek <your_student_id> --hide example_student
-```
-
----
-
-## Installation
-
-### Prerequisites
-
-- **Python 3.7+** (Python 3.11 recommended)
-- **Conda** environment manager
-- **NumPy** library
-
-### Setup Steps
-
-```bash
-# 1. Activate conda environment
-conda activate ml
-
-# 2. Install dependencies
 pip install -r requirements.txt
 ```
 
-The `requirements.txt` contains:
-```text
-numpy>=1.20.0
-```
-
-### Verify Installation
-
-Test that everything works:
+### 2. Install TypeScript backend
 
 ```bash
-cd src
-python arena.py --seek example_student --hide example_student
+cd ts-backend
+npm install
+npm run build
+cd ..
 ```
 
-You should see a colorful visualization of Pacman (blue) chasing Ghost (red) in a maze!
-
----
-
-## Understanding the Game
-
-### Objective
-
-- **Pacman (Seeker)**: Catch the Ghost by moving to within the capture distance (reaches the same position by default, but this threshold can be configured).
-- **Ghost (Hider)**: Evade Pacman for as long as possible (survive until max steps).
-
-### Win Conditions
-
-- **Pacman wins**: Catches Ghost before the maximum steps are reached.
-- **Ghost wins**: Survives for max steps (default: 200) without being caught.
-
-### The Map
-
-The game is played on a grid maze, and you receive the current layout as a 2D numpy array:
-
-- `0` = Empty space (you can move here)
-- `1` = Wall (you cannot move here)
-- `-1` = Unseen/Fog of war (you cannot see what is here due to limited observation radius)
-
-### Movement
-
-You can move in 5 directions by returning a `Move` enum:
-
-```python
-Move.UP      # Move up    (row - 1, col)
-Move.DOWN    # Move down  (row + 1, col)
-Move.LEFT    # Move left  (row, col - 1)
-Move.RIGHT   # Move right (row, col + 1)
-Move.STAY    # Don't move (row, col)
-```
-
-**Advanced Pacman Movement:**
-While Ghost agents must always return a single `Move` enum, Pacman agents have access to a straight-path speed multiplier. If the aren is configured with `pacman_speed > 1`, Pacman can choose to move multiple steps in the same direction in a single turn! To do this, a Pacman agent can instead return a tuple `(Move, steps)` where `steps` is an integer between 1 and the maximum allowed speed.
-
-### Important: Synchronous Execution
-
-**Both agents move at the SAME time!**
-
-- Both receive the state simultaneously
-- Both decide their moves at the same time
-- Both positions update at once
-
-This means you cannot react to your opponent's move instantly - you must predict it!
-
-### Game Information You Receive
-
-Every step, your `step()` method receives:
-
-1. **`map_state`**: 2D numpy array of the maze (`0`=empty, `1`=wall, `-1`=unseen)
-2. **`my_position`**: Your current position as `(row, col)`
-3. **`enemy_position`**: Enemy's current position as `(row, col)` if they are visible, or **`None`** if they are outside your observation radius (when fog of war is enabled)
-4. **`step_number`**: Current step number in the game (starts at 1)
-
----
-
-## Creating Your Agent
-
-### Required Code Structure
-
-Your `agent.py` must define a `PacmanAgent` and/or `GhostAgent` class:
-
-```python
-import sys
-from pathlib import Path
-
-# Add src to path so you can import framework classes
-src_path = Path(__file__).parent.parent.parent / "src"
-sys.path.insert(0, str(src_path))
-
-from agent_interface import PacmanAgent as BasePacmanAgent
-from agent_interface import GhostAgent as BaseGhostAgent
-from environment import Move
-import numpy as np
-
-
-class PacmanAgent(BasePacmanAgent):
-    """Your Pacman (Seeker) implementation."""
-    
-    def __init__(self, **kwargs):
-        """Initialize your agent. Called once at game start."""
-        super().__init__(**kwargs)
-        # Initialize your data structures here
-        # Example: self.path_cache = {}
-        
-    def step(self, map_state, my_position, enemy_position, step_number):
-        """
-        Called every step. Return your move decision.
-        
-        Args:
-            map_state: numpy array (height x width), 0=empty, 1=wall, -1=unseen
-            my_position: (row, col) tuple of Pacman's position
-            enemy_position: (row, col) tuple of Ghost's position or None if unseen
-            step_number: Current step number (starts at 1)
-            
-        Returns:
-            Move or tuple (Move, int): One of the Move enums OR a tuple of
-            the Move enum and number of steps (if pacman_speed > 1).
-        """
-        # Handle fog of war gracefully (when enemy is not visible)
-        if enemy_position is None:
-            # Implement your exploration/searching logic here
-            return Move.STAY
-        
-        # Example: Simple greedy move toward enemy
-        row_diff = enemy_position[0] - my_position[0]
-        col_diff = enemy_position[1] - my_position[1]
-        
-        if abs(row_diff) > abs(col_diff):
-            if row_diff > 0:
-                return Move.DOWN
-            else:
-                return Move.UP
-        else:
-            if col_diff > 0:
-                return Move.RIGHT
-            else:
-                return Move.LEFT
-
-
-class GhostAgent(BaseGhostAgent):
-    """Your Ghost (Hider) implementation."""
-    
-    def __init__(self, **kwargs):
-        """Initialize your agent. Called once at game start."""
-        super().__init__(**kwargs)
-        # Initialize your data structures here
-        
-    def step(self, map_state, my_position, enemy_position, step_number):
-        """
-        Called every step. Return your move decision.
-        
-        Args:
-            map_state: numpy array, 0=empty, 1=wall, -1=unseen
-            my_position: (row, col) tuple of Ghost's position
-            enemy_position: (row, col) tuple of Pacman's position or None
-            step_number: Current step number (starts at 1)
-            
-        Returns:
-            Move: One of the Move enums (UP, DOWN, LEFT, RIGHT, STAY)
-        """
-        # Handle fog of war gracefully 
-        if enemy_position is None:
-            # Ghost should keep moving unpredictably when Pacman is out of sight!
-            return Move.STAY
-        
-        # Example: Simple greedy move away from enemy
-        row_diff = enemy_position[0] - my_position[0]
-        col_diff = enemy_position[1] - my_position[1]
-        
-        if abs(row_diff) > abs(col_diff):
-            if row_diff > 0:
-                return Move.UP  # Move away
-            else:
-                return Move.DOWN
-        else:
-            if col_diff > 0:
-                return Move.LEFT  # Move away
-            else:
-                return Move.RIGHT
-```
-
-### Essential Helper Functions
-
-Add these helper methods to your agent class to quickly parse the grid layout:
-
-```python
-def _is_valid_position(self, pos, map_state):
-    """Check if position is valid (not wall or unseen boundaries)."""
-    row, col = pos
-    height, width = map_state.shape
-    
-    # Check bounds
-    if row < 0 or row >= height or col < 0 or col >= width:
-        return False
-    
-    # Check not a wall 
-    # (Optional: treat unseen (-1) carefully based on your strategy!)
-    return map_state[row, col] == 0
-
-
-def _apply_move(self, pos, move):
-    """Apply a move to a position, return new position."""
-    delta_row, delta_col = move.value
-    return (pos[0] + delta_row, pos[1] + delta_col)
-
-
-def _get_neighbors(self, pos, map_state):
-    """Get all valid neighboring positions and their moves."""
-    neighbors = []
-    
-    for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
-        next_pos = self._apply_move(pos, move)
-        if self._is_valid_position(next_pos, map_state):
-            neighbors.append((next_pos, move))
-    
-    return neighbors
-
-
-def _manhattan_distance(self, pos1, pos2):
-    """Calculate Manhattan distance between two positions."""
-    return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1])
-```
-
----
-
-## Implementing Search Algorithms
-
-### Breadth-First Search (BFS)
-
-**Best for Pacman** - Finds the shortest path to the Ghost. You can implement a standard BFS using a queue to track visited nodes and find the optimal sequence of moves.
-
-### A* Search
-
-**Best for Pacman** - Optimal path with heuristic guidance. Use a priority queue with a heuristic (like Manhattan distance) to estimate the cost to the goal, making the search significantly faster than BFS.
-
-### Greedy Best-First Search
-
-**Faster than A*** but not always optimal. Explores the map based entirely on the heuristic distance.
-
-### Evasion Strategy for Ghost
-
-**Maximize distance from Pacman** - Since the ghost wants to stay alive, simple strategies might include finding the immediately adjacent move that maximizes the Manhattan distance. 
-
-**Find furthest reachable position** - Advanced strategies involve running a BFS to map out reachable distances and heading toward the furthest accessible tile.
-
----
-
-## Testing Your Agent
-
-### Basic Testing
+### 3. Install React frontend
 
 ```bash
-# From src directory
-cd src
-
-# Test your Pacman against example Ghost
-python arena.py --seek <your_id> --hide example_student
-
-# Test your Ghost against example Pacman
-python arena.py --seek example_student --hide <your_id>
-
-# Test both your agents against each other
-python arena.py --seek <your_id> --hide <your_id>
+cd visualizer
+npm install
+cd ..
 ```
 
-### Advanced Testing Options
-
-You can specify additional game mechanics such as the capture distance threshold, speeds, and the fog-of-war observation conditions directly from the command line:
+### 4. Start the backend (SSE server)
 
 ```bash
-# Faster testing (no visualization)
-python arena.py --seek <your_id> --hide example_student --no-viz
-
-# Slower visualization for debugging (1 second delays)
-python arena.py --seek <your_id> --hide example_student --delay 1.0
-
-# Adjust max steps (longer game: 300, shorter game: 50)
-python arena.py --seek <your_id> --hide example_student --max-steps 300
-
-# Stochastic starting mode (random starting positions instead of classic starts)
-python arena.py --seek <your_id> --hide example_student --start-mode stochastic
-
-# Adjust capture distance (catch ghost when distance < 3 instead of default)
-python arena.py --seek <your_id> --hide example_student --capture-distance 3
-
-# Allow Pacman an advanced speed multiplier 
-# (You may return e.g. (Move.UP, 2) in your PacmanAgent if this is > 1)
-python arena.py --seek <your_id> --hide example_student --pacman-speed 2
-
-# Limit observation visibility (test Fog of War)
-python arena.py --seek <your_id> --hide example_student --pacman-obs-radius 5 --ghost-obs-radius 3
+cd ts-backend
+npm run dev
+# Server running at http://localhost:3001
+# SSE stream at http://localhost:3001/api/sse
 ```
 
-### Using the Run Script
-
-From the Arena directory:
+### 5. Start the frontend (dashboard)
 
 ```bash
-./run_game.sh --seek <your_id> --hide example_student
+cd visualizer
+npm run dev
+# Dashboard at http://localhost:5173
 ```
 
----
-
-## Debugging Tips
-
-### 1. Add Print Statements
-
-```python
-def step(self, map_state, my_position, enemy_position, step_number):
-    print(f"Step {step_number}: My pos={my_position}, Enemy pos={enemy_position}")
-    
-    if enemy_position is not None:
-        path = self.bfs(my_position, enemy_position, map_state)
-        print(f"  Found path: {[m.name for m in path[:5]]}")  # First 5 moves
-        
-        if path:
-            return path[0]
-            
-    return Move.STAY
-```
-
-### 2. Watch Visualization Slowly
+### 6. Full system launch (Linux/macOS)
 
 ```bash
-python arena.py --seek <your_id> --hide example_student --delay 1.0
+./run_game.sh
 ```
 
-### 3. Test Edge Cases
+Runs smoke test → generates replay → starts visualizer at http://localhost:5173.
 
-```python
-# Test helper functions independently
-agent = PacmanAgent()
-test_pos = (10, 10)
-test_map = np.zeros((21, 21))  # Empty map
+### 7. Generate replay from CLI
 
-# Test is_valid_position
-assert agent._is_valid_position(test_pos, test_map) == True
-assert agent._is_valid_position((-1, 10), test_map) == False
-
-# Test apply_move
-new_pos = agent._apply_move(test_pos, Move.UP)
-assert new_pos == (9, 10)
-
-print("All tests passed!")
-```
-
-### 4. Check for Infinite Loops
-
-Make sure your search algorithms terminate:
-
-```python
-def bfs(self, start, goal, map_state):
-    queue = deque([(start, [])])
-    visited = {start}  # IMPORTANT: Track visited nodes!
-    
-    max_iterations = 10000  # Safety limit
-    iterations = 0
-    
-    while queue and iterations < max_iterations:
-        iterations += 1
-        # ... rest of BFS
-        
-    if iterations >= max_iterations:
-        print("WARNING: BFS hit iteration limit!")
-    
-    return [Move.STAY]
-```
-
-### 5. Validate Return Values
-
-```python
-def step(self, map_state, my_position, enemy_position, step_number):
-    move = self.calculate_best_move(...)
-    
-    # Validate before returning
-    if not isinstance(move, Move) and not isinstance(move, tuple):
-        print(f"ERROR: Invalid move type: {type(move)}")
-        return Move.STAY
-    
-    return move
-```
-
----
-
-## Common Errors
-
-### Error: "Agent file not found"
-
-**Cause:** Folder name doesn't match the ID you used in command
-
-**Solution:**
 ```bash
-# Check your folder name
-ls submissions/
-
-# Make sure it matches exactly
-python arena.py --seek exact_folder_name --hide example_student
+cd ts-backend
+npm run generate-replay         # Default replay (40 steps)
+npm run generate-balanced       # Balanced replay (60 steps)
 ```
-
-### Error: "Must define a 'PacmanAgent' class"
-
-**Cause:** Class name is wrong or misspelled
-
-**Solution:**
-- Class must be named **exactly** `PacmanAgent` or `GhostAgent`
-- Check for typos: `PacMan`, `Pacman`, `pacmanAgent` are all WRONG
-- Make sure class inherits: `class PacmanAgent(BasePacmanAgent):`
-
-### Error: "Returned invalid move type"
-
-**Cause:** Returning wrong type (string, tuple, None, etc.)
-
-**Solution:**
-```python
-# ❌ WRONG
-return "UP"       # Wrong type
-return (0, -1)    # Returning coordinates
-return None       # Unhandled fallback
-
-# ✅ CORRECT for Ghost and Pacman
-return Move.UP
-
-# ✅ CORRECT for Pacman only (if max speed is configured)
-return (Move.UP, 2)
-```
-
-### Error: "Pacman requested N steps which exceeds maximum speed"
-
-**Cause:** Returning a speed multiplier tuple where the steps integer is greater than `--pacman-speed` (which defaults to 1). 
-**Solution:** Ensure `(Move, steps)` enforces `1 <= steps <= max_speed`.
-
-### Error: Agent crashes with IndexError
-
-**Cause:** Accessing map positions without validation or trying to read coordinates outside boundaries.
-
-**Solution:**
-```python
-# Always validate before accessing
-if self._is_valid_position(pos, map_state):
-    value = map_state[pos[0], pos[1]]  # Safe
-```
-
-### Error: Agent crashes with TypeError when calculating distances
-
-**Cause:** You may be treating `enemy_position` as a constant, but it turned into `None` due to the observation radius (Fog of War) hiding the enemy.
-
-**Solution:**
-```python
-# Validate that enemy is present before calculating distances
-if enemy_position is not None:
-    distance = self._manhattan_distance(my_position, enemy_position)
-```
-
-### Error: Agent takes too long / timeout
-
-**Cause:** Inefficient algorithm or infinite loop.
-
-**Solution:**
-1. Add visited set to prevent revisiting nodes
-2. Limit search depth
-3. Use better data structures (heap for A*, deque for BFS)
-4. Add iteration limit for safety
 
 ---
 
-## Advanced Strategies
+## Lab 1 — Adversarial Search
 
-### Strategy 1: Path Replanning
+**Workspace:** `pacman/` | **Observability:** Full (perfect information)
 
-Don't recompute the entire path every step. Cache your previous path and only replan if the enemy's position has significantly changed or if the current path runs out.
+A fully observable environment where both agents always see each other's positions.
 
-### Strategy 2: Predictive Movement
+### Environment
 
-Instead of aiming for the enemy's current tile, predict where the enemy will be next. Since Ghosts often try to maximize distance, you can simulate their next move and intercept them.
+- Map: static 21×21 grid. `0` = empty, `1` = wall
+- Pacman speed: 2 cells/turn (default)
+- Capture distance: 2 (Manhattan)
+- Max steps: 200
+- Turns: synchronous (simultaneous movement)
 
-### Strategy 3: Adversarial Search (Minimax)
+### Running Lab 1 via TypeScript UI
 
-You can model the game as a minimizing and maximizing player. Minimax (optionally with Alpha-Beta pruning) allows you to search a few steps ahead to evaluate potential adversarial interactions.
+1. Start the backend (`cd ts-backend && npm run dev`)
+2. Start the frontend (`cd visualizer && npm run dev`)
+3. Open http://localhost:5173
+4. Select **Lab 1** tab in the Control Panel
+5. Choose agents (TS or Python engine), adjust parameters
+6. Click **Start** to watch the real-time match visualization
 
----
+### Running Lab 1 via Python CLI
 
-## Quick Reference
+```bash
+cd pacman/src
 
-### Available Moves
+# Visual match (delay 0.3s between steps)
+python arena.py --seek team_submission --hide example_student --delay 0.3
 
-```python
-Move.UP      # (row-1, col)
-Move.DOWN    # (row+1, col)
-Move.LEFT    # (row, col-1)
-Move.RIGHT   # (row, col+1)
-Move.STAY    # (row, col)
+# Headless match (no visualization)
+python arena.py --seek team_submission --hide example_student --no-viz --max-steps 200
+
+# With random starting positions
+python arena.py --seek team_submission --hide example_student --no-viz --start-mode stochastic --max-steps 200
+
+# Custom parameters
+python arena.py --seek team_submission --hide example_student --pacman-speed 3 --capture-distance 2
 ```
 
-### Input Parameters to `step()`
+### Benchmarking Lab 1
 
-- `map_state`: 2D numpy array (`0`=empty, `1`=wall, `-1`=unseen)
-- `my_position`: (row, col) tuple
-- `enemy_position`: (row, col) tuple, or `None` if hidden by Fog of War.
-- `step_number`: int (starts at 1)
+```bash
+# 10-game benchmark (deterministic)
+python pacman/scripts/benchmark_agents.py --seek team_submission --hide example_student --games 10
 
-### Essential Helper Functions
+# Smoke test
+python pacman/scripts/run_smoke_test.py
 
-```python
-_is_valid_position(pos, map_state)  # Check if position is valid
-_apply_move(pos, move)               # Apply move to position
-_get_neighbors(pos, map_state)       # Get valid neighbors
-_manhattan_distance(pos1, pos2)      # Calculate distance
+# Run all tests
+python -m pytest pacman/tests -v
 ```
 
-### Common Algorithms
+### Scoring & Tie-Break
 
-- **BFS**: Shortest path (optimal for Pacman)
-- **A\***: Optimal with heuristic (efficient for Pacman)
-- **Greedy**: Fast but not optimal
-- **Minimax**: Adversarial search (good for Ghost)
+| Role | Formula |
+|------|---------|
+| **Ghost (Hider)** | `winrate_hide = Hide wins / Hide games` |
+| **Pacman (Seeker)** | `winrate_seek = Seek wins / Seek games` |
 
----
-
-## Checklist Before Submission
-
-- [ ] Agent loads without errors
-- [ ] Agent doesn't crash during game
-- [ ] Agent makes valid moves (returns Move enum, or appropriate tuple for Pacman speed multiplier)
-- [ ] Handles unseen areas (`-1`) and `enemy_position` being `None` appropriately
-- [ ] Agent performs better than random
-- [ ] Agent handles being trapped in corners
-- [ ] Agent works for full game length (200 steps)
-- [ ] Code is well-documented with comments
-- [ ] No print statements in final version (or minimal)
+**Tie-break:** `diff = avg_steps_pacman - avg_steps_ghost` (lower is better). Pacman should capture quickly; Ghost should survive as long as possible.
 
 ---
 
-## Getting Help
+## Lab 2 — POMDP / Blind Adversary
 
-1. **Read this guide** thoroughly.
-2. **Check example_student/agent.py** for working baseline code.
-3. **Test with `--delay 0.5`** to see what your agent is doing in real-time.
-4. **Use print statements** to trace variables, especially `enemy_position`.
-5. **Ask your instructor or TA** if you get stuck.
+**Workspace:** `blind/` | **Observability:** Partial (fog-of-war)
+
+A partially observable environment where the map is shrouded in dynamic fog-of-war. Agents make decisions based on accumulated observations.
+
+### Key differences from Lab 1
+
+| | Lab 1 | Lab 2 |
+|---|---|---|
+| **Information** | Perfect (entire map) | Partial (fog-of-war) |
+| **Vision** | Full 21×21 | Cross-shaped, radius 5, blocked by walls |
+| **`map_state`** | `0`=empty, `1`=wall | `0`=seen-empty, `1`=wall, **`-1`=unseen** |
+| **`enemy_position`** | Always present | May be **`None`** (opponent out of sight) |
+| **Strategy** | Optimal pathfinding | Reasoning under uncertainty |
+
+### Fog-of-War Mechanism
+
+Cross-shaped vision: agent sees up to 5 cells in each cardinal direction. Line-of-sight is **blocked by walls**. Example:
+
+```
+? ? ? . ? ? ?
+? ? ? . ? ? ?
+. . . G . . .     G = Ghost position
+? ? ? . ? ? ?     . = visible cell
+? ? ? # ? ? ?     # = wall (blocks vision)
+? ? ? ? ? ? ?     ? = unseen cell
+```
+
+### Running Lab 2 via TypeScript UI
+
+1. Start the backend (`cd ts-backend && npm run dev`)
+2. Start the frontend (`cd visualizer && npm run dev`)
+3. Open http://localhost:5173
+4. Select **Lab 2** tab in the Control Panel
+5. Configure observation radii (default 5 for both agents)
+6. Click **Start** — fog-of-war visualization is rendered in real-time
+
+### Running Lab 2 via Python CLI
+
+```bash
+cd blind/src
+
+# Visual match with fog-of-war (default radii = 5)
+python arena.py --seek example_student --hide example_student \
+    --pacman-obs-radius 5 --ghost-obs-radius 5 --delay 0.3
+
+# Headless match
+python arena.py --seek team_submission --hide example_student \
+    --pacman-obs-radius 5 --ghost-obs-radius 5 --no-viz --max-steps 200
+
+# Custom observation radii
+python arena.py --seek team_submission --hide example_student \
+    --pacman-obs-radius 3 --ghost-obs-radius 7 --no-viz
+```
+
+### Benchmarking Lab 2
+
+```bash
+# 10-game benchmark (fog-of-war ON by default)
+python blind/scripts/benchmark_agents.py --seek team_submission --hide example_student --games 10
+
+# Smoke test
+python blind/scripts/run_smoke_test.py
+
+# Run all tests
+python -m pytest blind/tests -v
+```
 
 ---
 
-## Good Luck! 🎮
+## Running the TypeScript UI & Backend
 
-Have fun implementing your AI agent! Remember:
+The TypeScript backend (`ts-backend/`) is the central orchestrator. It manages match state, runs the simulation loop, and streams events to the frontend via SSE. It supports three engine modes:
 
-- Start simple (get it working first, then add predictions/fogs)
-- Test frequently
-- Improve incrementally
-- Learn from mistakes
-- Compete fairly and have fun!
+| Engine | Description |
+|--------|-------------|
+| `ts` | Pure TypeScript agents (HideAgent/SeekAgent inside `ts-backend/src/agents/`) |
+| `python` | Spawns Python child process via `PythonBridge`, JSON Lines protocol |
+| `hybrid` | Mixed — e.g., Pacman in Python, Ghost in TypeScript |
 
-**May the best algorithm win!** 🏆
+### Backend Commands
+
+```bash
+cd ts-backend
+
+# Development mode (hot-reload via tsx watch)
+npm run dev
+
+# Production build + start
+npm run build
+npm run start
+
+# Generate replay JSON (no server needed)
+npm run generate-replay
+npm run generate-balanced
+```
+
+### Frontend Commands
+
+```bash
+cd visualizer
+
+# Development mode (hot-reload via Vite)
+npm run dev
+
+# Production build
+npm run build
+
+# Preview production build
+npm run preview
+```
+
+### Complete Flow: Simulating a Lab Match with UI
+
+1. **Start backend** (terminal 1):
+   ```bash
+   cd ts-backend && npm run dev
+   ```
+   Backend listens on `http://localhost:3001`.
+
+2. **Start frontend** (terminal 2):
+   ```bash
+   cd visualizer && npm run dev
+   ```
+   Dashboard opens at `http://localhost:5173`.
+
+3. **In the browser dashboard:**
+   - Select **Lab 1** or **Lab 2** tab
+   - Choose Pacman agent (ts/python) and Ghost agent (ts/python)
+   - Choose engine mode (ts/python/hybrid)
+   - Adjust parameters: `maxSteps`, `captureDistance`, `pacmanSpeed`, observation radii (Lab 2)
+   - Click **Start** to begin the real-time match
+   - Use **Pause** / **Resume** / **Reset** buttons for match control
+   - The canvas renders agents, walls, fog-of-war (Lab 2), and various visual layers
+
+4. **Match lifecycle events (SSE):**
+   - `connected` — SSE connection established
+   - `map_data` — initial map grid sent
+   - `match_start` — match begins, initial positions
+   - Step events — per-tick data (positions, actions, scores, Manhattan distance)
+   - `match_end` — winner declared, final stats
+   - `paused` / `resumed` / `reset` — lifecycle control events
+
+---
+
+## Running Python Labs Directly
+
+You can run matches entirely in Python without the TypeScript stack. Each lab has its own `arena.py` runner.
+
+### Lab 1 Quick Run
+
+```bash
+# From repo root
+python pacman/src/arena.py --seek team_submission --hide example_student
+
+# Or cd into src first (no --submissions-dir flag needed)
+cd pacman/src
+python arena.py --seek team_submission --hide example_student --delay 0.3
+```
+
+### Lab 2 Quick Run
+
+```bash
+cd blind/src
+python arena.py --seek team_submission --hide example_student \
+    --pacman-obs-radius 5 --ghost-obs-radius 5 --delay 0.3
+```
+
+### Available CLI Flags (both labs)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--seek <id>` | required | Seeker agent ID |
+| `--hide <id>` | required | Hider agent ID |
+| `--max-steps` | 200 | Maximum steps before ghost wins |
+| `--capture-distance` | 2 | Manhattan threshold for capture |
+| `--pacman-speed` | 2 | Cells per turn for Pacman |
+| `--delay` | 0.1 | Seconds between steps (visualization) |
+| `--no-viz` | off | Disable terminal visualization |
+| `--start-mode` | deterministic | `stochastic` for random spawns |
+| `--step-timeout` | 1.0s | Per-step time limit (UNIX only) |
+
+**Lab 2 additional flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--pacman-obs-radius` | 5 | Pacman observation radius |
+| `--ghost-obs-radius` | 5 | Ghost observation radius |
+
+### Running Tests
+
+```bash
+# Root tests
+python -m pytest tests/ -v
+
+# Lab 1 tests
+python -m pytest pacman/tests/ -v
+
+# Lab 2 tests
+python -m pytest blind/tests/ -v
+
+# Smoke tests
+python pacman/scripts/run_smoke_test.py
+python blind/scripts/run_smoke_test.py
+```
+
+---
+
+## Techniques Used
+
+### Lab 1: Adversarial Search (Perfect Information)
+
+**PacmanAgent (Seeker — student 24127561):**
+
+| Technique | Description |
+|-----------|-------------|
+| **A\* Search** | Shortest-path pursuit toward Ghost with Manhattan heuristic, heapq-optimized O(N log N) |
+| **Streak Interception** | Tracks Ghost direction over consecutive steps; projects Ghost 4 cells forward to intercept at junctions/corridors |
+| **Path Caching** | Caches A\* path per target; reuses when target and position unchanged between steps |
+| **Speed-2 Packing** | Packs consecutive same-direction A\* steps up to `pacmanSpeed` for straight-line acceleration |
+| **Trap Pressure** | Optional: extends straight-line movement to pressure Ghost escape routes near junctions |
+| **Junction Targeting** | Prefers interception at cells with degree ≥ 3 (junctions) to cut off Ghost options |
+| **Fallback Exploration** | Random shuffle + unvisited-bonus exploration when Ghost position is unknown |
+
+**GhostAgent (Hider — student 24127192):**
+
+| Technique | Description |
+|-----------|-------------|
+| **US-L\* (Online Opponent Learning)** | Learns Pacman movement patterns via abstract state-action counts with confidence weighting; adapts over time |
+| **Iterative Deepening Maximin Search** | Depth 2–17 maximin tree; Ghost maximizes, Pacman minimizes; expands until time budget (0.95s) |
+| **Multi-Model Opponent Prediction** | Ranks Pacman next positions from 7 models: A\* (speed-aware), Greedy Best-First, Exact BFS chaser — each toward Ghost or interception target |
+| **Capture ETA (Time-to-Capture)** | `capture_eta(start, target)`: computes how many turns Pacman needs to reach capture range, accounting for `pacmanSpeed` |
+| **Safe Area** | `safe_area(ghost, pac_positions)`: flood-fill counts cells where Ghost arrives before any predicted Pacman position |
+| **Map Topology Analysis** | Pre-computes dead-ends, junctions, corridors, core region (iterative leaf pruning), and largest DFS-detected cycle |
+| **Phase-Based Strategy** | Transition system: Opening Spread → Far Reading → Loop Lure (committed/uncommitted) → Counter Loop → Deep Search |
+| **Anti-Velocity Scoring** | Penalizes moves that follow Ghost's momentum (predictable) or backtrack to previous position |
+| **Cell Safety Scoring** | Weighted score combining: BFS distance, capture ETA, safe area, degree, dead-end depth, junction distance, loop distance, Pacman influence decay |
+| **Panic Mode** | When Manhattan ≤ 1, switches to fast multi-criteria greedy escape |
+
+**Shared infrastructure:**
+
+| Component | Description |
+|-----------|-------------|
+| **BFS Distance Map** | Cached BFS from any source point; used by both agents |
+| **Flood Fill** | `reachable_count()` for mobility estimation (max depth limited) |
+| **A\* with Heuristic** | Manhattan heuristic A\* for optimal pathfinding |
+| **Valid Move Filtering** | Always validates moves against map boundaries and walls |
+
+### Lab 2: POMDP / Blind Adversary (Partial Observability)
+
+All Lab 2 agents share these foundations:
+
+| Technique | Description |
+|-----------|-------------|
+| **Persistent Memory Map** | Accumulates observations across steps: visible cells overwritten, unseen cells remain `-1` |
+| **Optimistic Traversability** | Treats `-1` (unseen) cells as potentially passable for A\* pathfinding; walls (`1`) always block |
+| **Enemy Position Handling** | Falls back to `last_known_enemy_position` when `enemy_position is None` |
+| **Frontier-Based Exploration** | When enemy lost, navigates to nearest known-empty cell adjacent to unknown cells |
+
+**PacmanAgent (Blind Seeker — student 24127561):**
+
+| Technique | Description |
+|-----------|-------------|
+| **A\* on Memory Map** | Pathfinding runs on accumulated memory, treating `-1` as open |
+| **Streak Interception (Blind)** | Same direction-tracking as Lab 1, projecting Ghost positions on memory map |
+| **Frontier Exploration** | Scans entire memory map for frontier cells (known `0` adjacent to `-1`); picks nearest |
+| **Path Caching** | Reuses computed A\* paths when target unchanged |
+
+**GhostAgent (Blind Hider — student 24127192):**
+
+| Technique | Description |
+|-----------|-------------|
+| **A\*-Strategic Evasion** | When BFS distance > threshold, runs A\* to farthest safe cell (BFS-turns-to-capture filter) |
+| **Minimax Alpha-Beta (Depth 8)** | Tactical evasion: Ghost maximizes distance, Pacman modeled with speed-2 reach |
+| **Floodfill Safety Scoring** | Counts cells where Ghost arrives before Pacman (considering Pacman speed); applies dead-end/junction weighting |
+| **Anti-Oscillation** | Filters moves that lead back to cells in recent history (6-step window) |
+| **Topology Analysis** | Pre-computes dead-end cells (degree ≤ 1) for penalty weighting |
+| **BFS with LRU Cache** | Cached BFS distance maps for repeated queries |
+
+**RL Agent (student 24127457):**
+
+| Technique | Description |
+|-----------|-------------|
+| **Recurrent Actor-Critic (A2C + LSTM)** | PyTorch model with LSTM hidden state (128 units) for memory across steps |
+| **3-Channel Observation Tensor** | wall (1), seen-empty (0), fog (-1) → 3 binary channels |
+| **Position Normalization** | Agent position encoded as `[row/H, col/W]` float vector |
+| **Deadlock Guards** | Anti-stuck: forces random move + LSTM reset after 3 consecutive STAYs or 5 steps with no position change |
+| **Deterministic Inference** | `get_action_and_value(deterministic=True)` for tournament play |
+| **Separate Models** | Two trained models: `pacman_model.pth` and `ghost_model.pth` |
+| **Action Space** | Pacman: 9 actions (4 directions × 2 speeds + STAY); Ghost: 5 actions (4 directions + STAY) |
+
+### TypeScript Agent Ports (ts-backend/)
+
+The TypeScript backend includes complete ports of the Python reference agents, used when `engine: "ts"`:
+
+| Agent | File | Key Algorithm |
+|-------|------|---------------|
+| **HideAgent** | `ts-backend/src/agents/hideAgent.ts` | Minimax + Alpha-Beta (depth 3), `evaluateHide()` heuristic, visit counter, stay penalty |
+| **SeekAgent** | `ts-backend/src/agents/seekAgent.ts` | A\* path + `predictedHideMoves()` (top-3 targets) + Minimax (depth 2), `evaluateSeek()` |
+| **SearchBoard** | `ts-backend/src/search/bfs.ts` | BFS distance map (cached), degree map, dead-end distance, `setFog()` for fog-of-war |
+| **A\*** | `ts-backend/src/search/astar.ts` | `astarPath()`, `firstMoveFromPath()` with Manhattan heuristic |
+| **Flood Fill** | `ts-backend/src/search/floodFill.ts` | `reachableArea()`, `safeArea()` |
+| **Fog-of-War** | `ts-backend/src/movement.ts` | `computeFogGrid()`, `isVisible()` — ray-casting line-of-sight |
+
+---
+
+## Modification Restrictions
+
+| Area | Status | Rationale |
+|------|--------|-----------|
+| `src/` (Python core) | FORBIDDEN | Reference agent implementation |
+| `pacman/src/` | FORBIDDEN | Lab 1 core framework |
+| `blind/src/` | FORBIDDEN | Lab 2 core framework |
+| `tests/` | FORBIDDEN | Unit test suite |
+| `scripts/` | FORBIDDEN | Tooling scripts |
+| `agent.py` (root) | FORBIDDEN | Tournament entry point |
+| `ts-backend/` | ALLOWED | Orchestration layer |
+| `visualizer/` | ALLOWED | Frontend dashboard |
+| `pacman/submissions/<id>/` | ALLOWED | Lab 1 agent code |
+| `blind/submissions/<id>/` | ALLOWED | Lab 2 agent code |
+
+---
+
+## Performance Constraints
+
+| Constraint | Limit |
+|------------|-------|
+| **Time per step** | < 1.0 second (aim for < 0.85s budget) |
+| **Memory (RAM)** | < 128 MB |
+| **Python** | 3.11 |
+| **Lab 1 allowed libs** | `numpy`, `pandas`, `scipy`, `gurobi` |
+| **Lab 2 allowed libs** | `numpy`, `pandas`, `scipy`, `gurobi`, `pytorch`, `scikit-learn` |
+
+### Submission Files
+
+- Lab 1 final agent: `pacman/submissions/team_submission/agent.py`
+- Lab 2 final agent: `blind/submissions/team_submission/agent.py`
+- Must define both `PacmanAgent` and `GhostAgent` classes
+- Must inherit from `agent_interface.BasePacmanAgent` / `BaseGhostAgent`
+- Must implement `step(map_state, my_position, enemy_position, step_number)` with correct return types
+
+### Export for Submission
+
+```bash
+python pacman/scripts/export_submission.py team_submission --force
+python blind/scripts/export_submission.py team_submission --force
+```
+
+---
+
+*Documentation compiled from actual source code of the Hide & Seek Arena system.*
