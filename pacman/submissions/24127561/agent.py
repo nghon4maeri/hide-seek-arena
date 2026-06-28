@@ -588,57 +588,7 @@ class PacmanAgent(BasePacmanAgent):
 
         return move_result
 
-    # ------------------------------------------------------------------
-    # Convert A* path → (Move, steps) action
-    # ------------------------------------------------------------------
-    def _path_to_action(self, me, path, ms):
-        """Extract first move from A* path, pack consecutive same-direction
-        steps up to pacman_speed (straight-line constraint)."""
-        first_move = path[0]
 
-        # Count desired consecutive same-direction steps from path
-        desired = 1
-        for i in range(1, min(len(path), self.pacman_speed)):
-            if path[i] == first_move:
-                desired += 1
-            else:
-                break
-
-        # Walk up to `desired` steps, stopping if wall encountered
-        steps = 0
-        cur = me
-        for _ in range(min(self.pacman_speed, desired)):
-            nxt = _apply(cur, first_move)
-            if not _valid(nxt, ms):
-                break
-            steps += 1
-            cur = nxt
-
-        return (first_move, max(1, steps))
-
-    # ------------------------------------------------------------------
-    # Exploration (enemy not visible — fog of war fallback)
-    # ------------------------------------------------------------------
-    def _explore(self, me, ms):
-        candidates = _legal(me, ms)
-        if not candidates:
-            return (Move.STAY, 1)
-
-        def score(m):
-            nxt = _apply(me, m)
-            unvisited_bonus = 5 if nxt not in self._visited else 0
-            return unvisited_bonus + _cell_exits(nxt, ms)
-
-        best = max(candidates, key=score)
-        steps = 0
-        cur = me
-        for _ in range(self.pacman_speed):
-            nxt = _apply(cur, best)
-            if not _valid(nxt, ms):
-                break
-            steps += 1
-            cur = nxt
-        return (best, max(1, steps))
 
 
 # ===================================================================

@@ -69,6 +69,7 @@ pacman/
 │
 ├── scripts/                      # Công cụ đánh giá & đóng gói
 │   ├── benchmark_agents.py       # Chạy nhiều trận đấu, thống kê kết quả
+│   ├── benchmark_full.py         # Benchmark tự động N games stochastic + stats
 │   ├── run_smoke_test.py         # Smoke test nhanh (5 step, no-viz)
 │   └── export_submission.py      # Đóng gói bài nộp
 │
@@ -393,6 +394,62 @@ diff = avg_steps_pacman - avg_steps_ghost   # Càng thấp càng tốt
 - Pacman cần bắt Ghost **càng nhanh càng tốt** (giảm avg_steps_pacman)
 - Ghost cần sống **càng lâu càng tốt** (tăng avg_steps_ghost)
 - Cả hai chỉ số đều quan trọng như nhau cho thứ hạng cuối cùng
+
+### 4.9. Benchmark Tự động 100 Games (Stochastic)
+
+Script `benchmark_full.py` tự động chạy N games (mặc định 100) với vị trí spawn ngẫu
+nhiên, parse kết quả và báo cáo thống kê chi tiết:
+
+```bash
+# Chạy từ repo root
+python pacman/scripts/benchmark_full.py --seek 24127561 --hide 24127457 --games 100
+
+# Output JSON để parse tự động
+python pacman/scripts/benchmark_full.py --seek 24127457 --hide 24127192 --games 100 --json
+
+# Tùy chỉnh max steps và các tham số khác
+python pacman/scripts/benchmark_full.py \
+    --seek 24127561 --hide 24127457 \
+    --games 200 --max-steps 300 \
+    --capture-distance 2 --pacman-speed 2
+
+# So sánh 2 Ghost với cùng 1 Pacman
+python pacman/scripts/benchmark_full.py --seek 24127561 --hide 24127457 --games 100
+python pacman/scripts/benchmark_full.py --seek 24127561 --hide 24127192 --games 100
+```
+
+**Output mẫu:**
+
+```text
+============================================================
+  RESULTS
+============================================================
+
+  Total games  : 100
+  Completed    : 100
+  Errors       : 0
+
+  24127561 (Seeker) wins : 72 (72.0%)
+  24127457 (Hider) wins  : 28 (28.0%)
+
+  Seeker avg capture steps : 14.2  (min=5, max=52)
+  Hider  avg survival steps: 200.0  (min=200, max=200)
+  Overall avg steps/game   : 66.1
+
+  Tie-break diff (seek_avg - hide_avg) : -185.8  (lower = better)
+
+  Total time: 45s  (0.5s per game)
+```
+
+| Flag | Mặc định | Ý nghĩa |
+|------|----------|---------|
+| `--seek` | *(bắt buộc)* | ID của Pacman (Seeker) |
+| `--hide` | *(bắt buộc)* | ID của Ghost (Hider) |
+| `--games` | `100` | Số game cần chạy |
+| `--max-steps` | `200` | Giới hạn bước mỗi game |
+| `--capture-distance` | `2` | Ngưỡng Manhattan để Pacman bắt Ghost |
+| `--pacman-speed` | `2` | Tốc độ Pacman |
+| `--json` | tắt | In thêm JSON summary để dùng với script tự động |
 
 ---
 
