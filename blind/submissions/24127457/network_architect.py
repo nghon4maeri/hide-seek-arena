@@ -1,25 +1,40 @@
+"""network_architect.py — V2: 4-channel CNN + 5-dim position input.
+
+After retraining, this replaces the V1 version.
+The agent.py auto-detects INPUT_CHANNELS == 4 and builds V2 observations.
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
 class RecurrentActorCritic(nn.Module):
-    """LSTM + CNN policy for partial-observability blind adversary.
+    """LSTM + CNN policy — V2 with enemy channel.
 
-    Must match the architecture in train_arena_rl.ipynb exactly
-    so that trained weights can be loaded.
+    Architecture
+    -----------
+    obs (4x21x21)  --Conv2D(4->16)--Conv2D(16->32)--FC(32x6x6->128)--+
+    pos (5)        --FC(5->16)----------------------------------------+--FC(144->128)--LSTM(128)--+-Actor(128->N_act)
+                                                                                                  +-Critic(128->1)
+
+    Channels: [wall, seen-empty, fog, enemy-position]
+    Pos vector: [my_r/H, my_c/W, enemy_r/H, enemy_c/W, visible_flag]
     """
+
+    INPUT_CHANNELS = 4
+    POS_DIM = 5
 
     def __init__(self, action_dim: int, hidden_size: int = 128):
         super().__init__()
         self.hidden_size = hidden_size
 
-        self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=2, padding=1)
+        self.conv1 = nn.Conv2d(self.INPUT_CHANNELS, 16, kernel_size=3, stride=2, padding=1)
         self.conv2 = nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1)
         self.conv_out = 32 * 6 * 6
 
         self.fc_cnn = nn.Linear(self.conv_out, 128)
-        self.fc_pos = nn.Linear(2, 16)
+        self.fc_pos = nn.Linear(self.POS_DIM, 16)
         self.fc_combine = nn.Linear(128 + 16, hidden_size)
 
         self.lstm = nn.LSTM(hidden_size, hidden_size, batch_first=True)
@@ -43,7 +58,7 @@ class RecurrentActorCritic(nn.Module):
             pos = pos.unsqueeze(1)
 
         B, T, C, H, W = obs_img.shape
-        x = obs_img.view(B * T, C, H, W)
+        x = obs_img.reshape(B * T, C, H, W)
 
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
@@ -61,8 +76,7 @@ class RecurrentActorCritic(nn.Module):
             combined = combined.squeeze(1)
         return combined
 
-    def forward(self, obs_img: torch.Tensor, pos: torch.Tensor,
-                hidden_state=None):
+    def forward(self, obs_img: torch.Tensor, pos: torch.Tensor, hidden_state=None):
         squeeze_out = (obs_img.dim() == 4)
         if squeeze_out:
             obs_img = obs_img.unsqueeze(1)
