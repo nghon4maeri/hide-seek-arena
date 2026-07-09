@@ -60,8 +60,6 @@ graph TB
 
 ## PacmanAgent — 3-Tier Lexicographic Architecture
 
-Lấy cảm hứng từ "Fortress-Farmer" (Top 2 Global Bomberland), Pacman sử dụng pipeline quyết định phân tầng nghiêm ngặt:
-
 ### Tier 1: Safety & Trap Filter
 - **Dead-end escape**: Nếu Pacman đang ở ô có ≤1 lối thoát → buộc rời ngay
 - **Corridor trap avoidance**: Lọc bỏ các nước đi dẫn vào hành lang mà Ghost có thể thoát
@@ -117,7 +115,6 @@ flowchart TD
 
 ## GhostAgent — Dynamic Mode Selection Architecture
 
-Lấy cảm hứng từ "samnu" HCMUS (Multi-Layer Predictive Core), Ghost sử dụng bộ lọc an toàn tương lai + 4 mode di chuyển linh hoạt:
 
 ### Tier 1: Provable Survival Gate
 - **Dead-end escape**: Nếu Ghost đang ở dead-end/corridor → buộc thoát ra junction
@@ -395,7 +392,5 @@ python scripts/benchmark_full.py --seek 24127457 --hide 24127457 --games 50
 
 ## Tham khảo
 
-- **Fortress-Farmer** (Top 2 Global Bomberland): 3-Tier Lexicographic Architecture
-- **samnu HCMUS** (Bomberland): Multi-Layer Predictive Core, Enemy Intent Tracking
 - **PPO**: Proximal Policy Optimization (Schulman et al., 2017)
 - **GAE**: Generalized Advantage Estimation (Schulman et al., 2016)
