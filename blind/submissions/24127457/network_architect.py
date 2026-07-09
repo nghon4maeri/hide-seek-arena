@@ -1,7 +1,20 @@
-"""network_architect.py — V2: 4-channel CNN + 5-dim position input.
+"""network_architect.py — CNN + LSTM policy network for Deep RL.
 
-After retraining, this replaces the V1 version.
-The agent.py auto-detects INPUT_CHANNELS == 4 and builds V2 observations.
+Architecture:
+  obs (6x21x21)  --Conv2D(6->16, k3, s2)--Conv2D(16->32, k3, s2)--FC(1152->128)--+
+  pos (7)        --FC(7->32)------------------------------------------------------+--FC(160->128)--LSTM(128)--+-Actor(128->N_act)
+                                                                                                             +-Critic(128->1)
+
+Channels:
+  0: wall           — 1.0 for walls, else 0
+  1: seen-empty     — 1.0 for currently visible empty cells
+  2: fog            — 1.0 for unseen territory
+  3: enemy-position — 1.0 at enemy cell if visible
+  4: belief-map     — normalised belief probability distribution
+  5: topology-map   — topological weight (junction=1.0, core=0.7, corridor=0.3, dead-end=0.0)
+
+Position vector (7-dim):
+  [my_r/H, my_c/W, enemy_r/H, enemy_c/W, visible_flag, threat_level, game_progress]
 """
 
 import torch
@@ -9,33 +22,25 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+INPUT_CHANNELS = 6
+POS_DIM = 7
+HIDDEN_SIZE = 128
+
+
 class RecurrentActorCritic(nn.Module):
-    """LSTM + CNN policy — V2 with enemy channel.
+    """LSTM + CNN Actor-Critic policy with 6-channel spatial input."""
 
-    Architecture
-    -----------
-    obs (4x21x21)  --Conv2D(4->16)--Conv2D(16->32)--FC(32x6x6->128)--+
-    pos (5)        --FC(5->16)----------------------------------------+--FC(144->128)--LSTM(128)--+-Actor(128->N_act)
-                                                                                                  +-Critic(128->1)
-
-    Channels: [wall, seen-empty, fog, enemy-position]
-    Pos vector: [my_r/H, my_c/W, enemy_r/H, enemy_c/W, visible_flag]
-    """
-
-    INPUT_CHANNELS = 4
-    POS_DIM = 5
-
-    def __init__(self, action_dim: int, hidden_size: int = 128):
+    def __init__(self, action_dim: int, hidden_size: int = HIDDEN_SIZE):
         super().__init__()
         self.hidden_size = hidden_size
 
-        self.conv1 = nn.Conv2d(self.INPUT_CHANNELS, 16, kernel_size=3, stride=2, padding=1)
+        self.conv1 = nn.Conv2d(INPUT_CHANNELS, 16, kernel_size=3, stride=2, padding=1)
         self.conv2 = nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1)
         self.conv_out = 32 * 6 * 6
 
         self.fc_cnn = nn.Linear(self.conv_out, 128)
-        self.fc_pos = nn.Linear(self.POS_DIM, 16)
-        self.fc_combine = nn.Linear(128 + 16, hidden_size)
+        self.fc_pos = nn.Linear(POS_DIM, 32)
+        self.fc_combine = nn.Linear(128 + 32, hidden_size)
 
         self.lstm = nn.LSTM(hidden_size, hidden_size, batch_first=True)
 

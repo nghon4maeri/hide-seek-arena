@@ -494,15 +494,6 @@ class GhostAgent(BaseGhostAgent):
         if ghost in self._ghost_hist: score -= 220.0
         if len(self._ghost_hist) >= 2 and ghost == self._ghost_hist[-2]: score -= 900.0
         score -= self._pacman_influence(ghost)
-        for pac, _, _ in pac_predictions[:1]:
-            if _manhattan(ghost, pac) <= 8:
-                gr, gc = ghost; pr, pc = pac
-                if gc == pc:
-                    blk = any(self._static_map[r][gc] == 1 for r in range(min(gr, pr)+1, max(gr, pr)))
-                    if not blk: score -= 15000.0
-                if gr == pr:
-                    blk = any(self._static_map[gr][c] == 1 for c in range(min(gc, pc)+1, max(gc, pc)))
-                    if not blk: score -= 15000.0
         score -= 12.0 * _manhattan(ghost, self._center)
         return score
 
@@ -797,7 +788,7 @@ class GhostAgent(BaseGhostAgent):
         best_move = self._move_order(me, pac_predictions, last_ghost, pac, step_number)[0]
         best_score = float("-inf")
         for depth in range(2, 18):
-            if time.time() - t0 > 0.95: break
+            if time.time() - t0 > 0.80: break
             score, move = self._search(me, pac_predictions, last_ghost, 0, depth, float("-inf"), t0, pac, step_number)
             if score is None: break
             if move is not None:
