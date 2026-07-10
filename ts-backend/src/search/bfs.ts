@@ -9,6 +9,7 @@ export class SearchBoard {
   private distCache = new Map<string, number[][]>();
   private degreeCache?: number[][];
   private deadCache?: number[][];
+  private fogCache: (0 | 1 | -1)[][] | null = null;
 
   constructor(readonly grid: Grid) {
     this.rows = grid.length;
@@ -19,6 +20,15 @@ export class SearchBoard {
         if (grid[r][c] === 0) this.passable.push([r, c]);
       }
     }
+  }
+
+  setFog(fog: (0 | 1 | -1)[][] | null): void {
+    this.fogCache = fog;
+    this.distCache.clear();
+  }
+
+  isOpenPos(pos: Position): boolean {
+    return isOpen(this.grid, pos);
   }
 
   distanceMap(source: Position, trace?: Position[]): number[][] {

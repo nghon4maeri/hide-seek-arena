@@ -48,7 +48,7 @@ export default function GameBoard({ map, width, height, step, layers, agentView 
       }
     }
 
-    const overlayAgents = agentView === "both" ? [step.pacman, step.ghost] : [agentView === "seek" ? step.ghost : step.pacman];
+    const overlayAgents = agentView === "both" ? [step.pacman, step.ghost] : [agentView === "ghost" ? step.ghost : step.pacman];
 
     if (layers.explored) {
       ctx.fillStyle = colors.bfs;
@@ -64,9 +64,9 @@ export default function GameBoard({ map, width, height, step, layers, agentView 
     }
 
     drawActionArrow(ctx, step.pacman.pos, step.pacman.action, cellSize, colors.pacman);
-    drawActionArrow(ctx, step.ghost.pos, step.ghost.action, cellSize, colors.ghostCore);
-    drawAgent(ctx, step.pacman.pos, cellSize, colors.pacman, "#fde68a", "P");
-    drawAgent(ctx, step.ghost.pos, cellSize, colors.ghostCore, colors.ghost, "G");
+    drawActionArrow(ctx, step.ghost.pos, step.ghost.action, cellSize, colors.ghost);
+    drawAgent(ctx, step.pacman.pos, cellSize, colors.pacman, "#ffffaa", "P");
+    drawAgent(ctx, step.ghost.pos, cellSize, colors.ghost, "#ff4444", "G");
   }, [map, width, height, step, layers, agentView]);
 
   return (

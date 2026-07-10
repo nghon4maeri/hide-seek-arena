@@ -1,99 +1,123 @@
-import ControlPanel from "./components/ControlPanel";
-import DashboardPanel from "./components/DashboardPanel";
-import GameBoard from "./components/GameBoard";
-import LayerToggles from "./components/LayerToggles";
-import ScorePanel from "./components/ScorePanel";
-import { useKeyboardControls } from "./hooks/useKeyboardControls";
-import { usePlayback } from "./hooks/usePlayback";
+import { useState, useEffect, useCallback } from "react";
+import type { LabId, UIConfig } from "./types/replay";
+import { useMatchEngine } from "./hooks/useMatchEngine";
 import { useReplay } from "./hooks/useReplay";
+import { usePlayback } from "./hooks/usePlayback";
+import ControlPanel from "./components/ControlPanel";
+import GameGrid from "./components/GameGrid";
+import StatsPanel from "./components/StatsPanel";
+import ReplayViewer from "./components/ReplayViewer";
+
+const DEFAULT_UI_CONFIG: UIConfig = {
+  labId: "lab1", delay: 0.05,
+  pacmanObsRadius: 5, ghostObsRadius: 5,
+  captureDistance: 2, pacmanSpeed: 2, maxSteps: 200,
+  randomSpawn: false, agentPacman: "ts (built-in)", agentGhost: "ts (built-in)",
+  engine: "ts",
+};
+
+interface BackendConfig {
+  labs: Array<{ id: string; name: string; description: string }>;
+  agents: string[];
+  defaultConfig: Record<string, unknown>;
+}
 
 export default function App() {
-  const { replay, error } = useReplay();
+  const [uiConfig, setUiConfig] = useState<UIConfig>(DEFAULT_UI_CONFIG);
+  const [agents, setAgents] = useState<string[]>(["ts (built-in)"]);
+  const { state: engine, connect, disconnect, startMatch, pauseMatch, resumeMatch, resetMatch } = useMatchEngine();
+  const { replay, error: replayError } = useReplay();
   const playback = usePlayback(replay);
 
-  useKeyboardControls({
-    togglePlay: () => playback.setPlaying(!playback.playing),
-    previousStep: playback.previousStep,
-    nextStep: playback.nextStep,
-    restart: playback.restart,
-    switchAgentView: playback.switchAgentView,
-    toggleLayer: playback.toggleLayer
-  });
+  const onConfigChange = useCallback((d: Partial<UIConfig>) => setUiConfig((p) => ({ ...p, ...d })), []);
 
-  if (error) {
+  useEffect(() => {
+    fetch("http://localhost:3001/api/config")
+      .then((r) => r.json())
+      .then((data: BackendConfig) => { if (data.agents) setAgents(data.agents); })
+      .catch(() => {});
+    connect();
+    return () => disconnect();
+  }, [connect, disconnect]);
+
+  const handleStart = useCallback(async () => {
+    await startMatch({
+      labId: uiConfig.labId, maxSteps: uiConfig.maxSteps,
+      captureDistance: uiConfig.captureDistance, pacmanSpeed: uiConfig.pacmanSpeed,
+      pacmanObsRadius: uiConfig.pacmanObsRadius, ghostObsRadius: uiConfig.ghostObsRadius,
+      randomSpawn: uiConfig.randomSpawn, agentPacman: uiConfig.agentPacman,
+      agentGhost: uiConfig.agentGhost, engine: uiConfig.engine,
+    });
+  }, [uiConfig, startMatch]);
+
+  const cur = engine.currentStep ?? playback.step;
+  const map = engine.mapData ?? (replay ? { grid: replay.map, width: replay.width, height: replay.height } : null);
+
+  if (replayError && !engine.connected) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-arena-bg p-6">
-        <div className="max-w-xl rounded-lg border border-red-400/40 bg-red-950/30 p-6">
-          <h1 className="text-xl font-semibold text-red-100">Replay load failed</h1>
-          <p className="mt-2 text-red-200">{error}</p>
-          <p className="mt-4 text-sm text-red-100">Run python scripts/generate_replay.py --trace-level full.</p>
+      <main style={{ background: "#000", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "monospace" }}>
+        <div style={{ border: "2px solid #f44", padding: 24, textAlign: "center" }}>
+          <b style={{ color: "#f44", fontSize: 14 }}>CONNECTION ERROR</b>
+          <p style={{ color: "#ccc", fontSize: 11 }}>{replayError}</p>
+          <code style={{ display: "block", marginTop: 12, padding: 8, border: "1px solid #333", color: "#ffff00", fontSize: 10 }}>
+            cd ts-backend &amp;&amp; npm run dev
+          </code>
         </div>
       </main>
     );
   }
 
-  if (!replay || !playback.step) {
+  if (!map || !cur) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-arena-bg">
-        <div className="rounded-lg border border-arena-line bg-arena-panel px-6 py-4 text-arena-muted">Loading match_log.json...</div>
+      <main style={{ background: "#000", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "monospace" }}>
+        <div style={{ border: "2px solid #ffff00", padding: 24 }}>
+          <b style={{ color: "#ffff00", fontSize: 14 }}>INITIALIZING...</b>
+          <p style={{ color: "#666", fontSize: 10, marginTop: 8 }}>Connecting to backend</p>
+        </div>
       </main>
     );
   }
 
+  const mapData = engine.mapData ?? { grid: replay!.map, width: replay!.width, height: replay!.height };
+  const hdrStyle = { fontFamily: "monospace", fontSize: 11 } as const;
+
   return (
-    <main className="min-h-screen bg-arena-bg p-4 text-arena-text">
-      <div className="mx-auto flex max-w-[1500px] flex-col gap-4">
-        <header className="rounded-lg border border-arena-line bg-gradient-to-r from-arena-panel to-slate-900 p-5">
-          <p className="text-xs uppercase tracking-[0.22em] text-cyan-300">Replay-driven AI Search Debugger</p>
-          <h1 className="mt-2 text-3xl font-semibold text-white">Hide and Seek Arena Visualizer</h1>
-          <p className="mt-2 max-w-4xl text-sm leading-6 text-arena-muted">
-            Shows the official map, Pacman, Ghost, explored nodes, predicted path, minimax/alpha-beta score,
-            candidate scores, and step-by-step playback. Coordinates are always [row, col].
-          </p>
+    <main style={{ background: "#000", color: "#ccc", minHeight: "100vh", padding: 12, ...hdrStyle }}>
+      <div style={{ maxWidth: 1600, margin: "0 auto" }}>
+        {/* Header */}
+        <header style={{ border: "2px solid #2121de", padding: 10, marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap" }}>
+          <div>
+            <span style={{ color: "#2121de", fontSize: 13 }}>24127457 ARENA — LAB SHOWCASE</span>
+            <h1 style={{ color: "#ffff00", fontSize: 18, margin: "4px 0 0 0" }}>SELF-PLAY MODE</h1>
+          </div>
+          <div style={{ display: "flex", gap: 16, fontSize: 10, color: "#666" }}>
+            <span>Engine: <b style={{ color: "#fff" }}>{uiConfig.engine.toUpperCase()}</b></span>
+            <span>Lab: <b style={{ color: "#0ff" }}>{uiConfig.labId.toUpperCase()}</b></span>
+            <span>Self-Play: <b style={{ color: "#ffff00" }}>24127457</b></span>
+          </div>
         </header>
 
-        <section className="grid gap-4 xl:grid-cols-[minmax(660px,1fr)_420px]">
-          <GameBoard map={replay.map} width={replay.width} height={replay.height} step={playback.step} layers={playback.layers} agentView={playback.agentView} />
-          <aside className="flex flex-col gap-4">
-            <div className="rounded-lg border border-arena-line bg-arena-panel p-3">
-              <label className="text-sm text-arena-muted">
-                Agent view
-                <select className="mt-2 w-full rounded-md border border-arena-line bg-arena-panel2 px-3 py-2 text-slate-100" value={playback.agentView} onChange={(event) => playback.setAgentView(event.target.value as typeof playback.agentView)}>
-                  <option value="hide">Hide / Pacman</option>
-                  <option value="seek">Seek / Ghost</option>
-                  <option value="both">Side-by-side</option>
-                </select>
-              </label>
-            </div>
-            {playback.agentView === "both" ? (
-              <>
-                <DashboardPanel step={playback.step} agent="hide" />
-                <ScorePanel step={playback.step} agent="hide" visible={playback.layers.candidateScores} />
-                <DashboardPanel step={playback.step} agent="seek" />
-                <ScorePanel step={playback.step} agent="seek" visible={playback.layers.candidateScores} />
-              </>
-            ) : (
-              <>
-                <DashboardPanel step={playback.step} agent={playback.agentView} />
-                <ScorePanel step={playback.step} agent={playback.agentView} visible={playback.layers.candidateScores} />
-              </>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 10 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {cur && (
+              <GameGrid map={mapData.grid} width={mapData.width} height={mapData.height}
+                step={cur} layers={playback.layers} agentView={playback.agentView} labId={uiConfig.labId} />
             )}
-            <LayerToggles layers={playback.layers} toggleLayer={playback.toggleLayer} />
-          </aside>
-        </section>
-
-        <ControlPanel
-          playing={playback.playing}
-          setPlaying={playback.setPlaying}
-          previousStep={playback.previousStep}
-          nextStep={playback.nextStep}
-          restart={playback.restart}
-          stepIndex={playback.stepIndex}
-          totalSteps={playback.totalSteps}
-          setStepIndex={playback.setStepIndex}
-          speedMs={playback.speedMs}
-          setSpeedMs={playback.setSpeedMs}
-        />
+            <StatsPanel replay={replay} currentStep={cur} />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <ControlPanel config={uiConfig} onConfigChange={onConfigChange}
+              onStart={handleStart} onPause={pauseMatch} onResume={resumeMatch} onReset={resetMatch}
+              running={engine.running} connected={engine.connected} agents={agents} />
+            <ReplayViewer replay={replay}
+              stepIndex={playback.stepIndex} totalSteps={playback.totalSteps}
+              setStepIndex={playback.setStepIndex} playing={playback.playing} setPlaying={playback.setPlaying}
+              previousStep={playback.previousStep} nextStep={playback.nextStep} restart={playback.restart}
+              speedMs={playback.speedMs} setSpeedMs={playback.setSpeedMs}
+              layers={playback.layers} toggleLayer={playback.toggleLayer}
+              agentView={playback.agentView} setAgentView={playback.setAgentView} />
+          </div>
+        </div>
       </div>
     </main>
   );

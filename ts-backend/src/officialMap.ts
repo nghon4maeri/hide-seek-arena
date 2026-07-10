@@ -1,6 +1,6 @@
 import type { Grid, Position } from "./types.js";
 
-const MAP_TEXT = `
+export const MAP_TEXT = `
 #####################
 #.........#.........#
 #.###.###.#.###.###.#

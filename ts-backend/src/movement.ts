@@ -62,3 +62,51 @@ export function maxValidSteps(grid: Grid, pos: Position, move: Move, limit: numb
 export function moveOrderIndex(move: Move): number {
   return ALL_MOVES.indexOf(move);
 }
+
+export function getRandomPassable(grid: Grid): Position {
+  const passable: Position[] = [];
+  for (let r = 0; r < grid.length; r++) {
+    for (let c = 0; c < grid[0].length; c++) {
+      if (grid[r][c] === 0) passable.push([r, c]);
+    }
+  }
+  return passable[Math.floor(Math.random() * passable.length)];
+}
+
+export function isVisible(
+  grid: Grid,
+  from: Position,
+  to: Position,
+  radius: number,
+  wallsBlock: boolean
+): boolean {
+  if (manhattan(from, to) > radius) return false;
+  if (!wallsBlock) return true;
+  const dr = Math.sign(to[0] - from[0]);
+  const dc = Math.sign(to[1] - from[1]);
+  let r = from[0] + dr;
+  let c = from[1] + dc;
+  while (r !== to[0] || c !== to[1]) {
+    if (grid[r]?.[c] === 1) return false;
+    if (r !== to[0]) r += dr;
+    if (c !== to[1]) c += dc;
+  }
+  return true;
+}
+
+export function computeFogGrid(
+  grid: Grid,
+  pos: Position,
+  radius: number,
+  wallsBlock: boolean
+): (0 | 1 | -1)[][] {
+  const fog: (0 | 1 | -1)[][] = grid.map((row) => row.map((cell) => (cell === 1 ? 1 : -1)));
+  for (let r = 0; r < grid.length; r++) {
+    for (let c = 0; c < grid[0].length; c++) {
+      if (grid[r][c] === 0 && isVisible(grid, pos, [r, c], radius, wallsBlock)) {
+        fog[r][c] = 0;
+      }
+    }
+  }
+  return fog;
+}
