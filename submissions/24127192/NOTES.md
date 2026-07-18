@@ -1,67 +1,296 @@
-# Ghi chú Cải tiến Ghost Agent v3.5
+# Ghi chú Ghost Agent V3 — Risk-aware Multi-policy Strategy
 
-### 1. Ý tưởng và Các Thuật toán/Chiến lược Đã Sử Dụng
-Ở phiên bản v3.5, Ghost tiếp tục phát triển từ nền tảng v3 nhưng không chỉ dựa vào một mô hình A* cố định nữa. Mục tiêu chính là sống lâu nhất có thể khi Pacman có tốc độ 2, biết vị trí Ghost, và thường sử dụng A* kết hợp dự đoán vận tốc. Ghost v3.5 kết hợp nhiều lớp dự đoán, đánh giá an toàn theo thời gian, và tìm kiếm sâu có giới hạn thời gian:
-- **US-L* Online Learning nâng cấp:** Thay vì chỉ nhớ một hành động cho mỗi trạng thái, Ghost lưu thống kê hành động theo trạng thái trừu tượng, tính độ tin cậy, và tạo nhiều dự đoán Pacman có trọng số.
-- **A* Search với Manhattan heuristic:** Ghost dùng A* để mô phỏng đường đuổi của Pacman đến vị trí Ghost hiện tại và vị trí Ghost bị nội suy theo vận tốc.
-- **Greedy Best-First Search:** Được dùng như một mô hình Pacman phụ, mô phỏng trường hợp Pacman chọn hướng làm giảm Manhattan/BFS distance nhanh nhất.
-- **BFS/UCS Shortest Path Model:** Vì bản đồ có chi phí bước đi bằng nhau, BFS được dùng để tính khoảng cách thật, chaser model, safe area, và các đặc trưng topology.
-- **Iterative Deepening Maximin Search:** Ghost tìm kiếm nhiều độ sâu tăng dần trong giới hạn thời gian, luôn giữ lại nước đi tốt nhất ở độ sâu đã hoàn thành.
-- **Temporal Safety Analysis:** Ghost không chỉ hỏi "Pacman cách bao xa", mà còn ước lượng Pacman cần bao nhiêu lượt để bắt được một ô khi có tốc độ 2.
-- **Topology Control:** Ghost ưu tiên vùng core, loop, junction nhiều lối thoát; phạt nặng dead-end branch và vùng có ít không gian thoát.
-- **Anti-Velocity Prediction:** Ghost thưởng cho các nước rẽ hướng ở junction hoặc lúc nguy hiểm để phá dự đoán tuyến tính của Pacman.
-- **Phase Strategy theo khoảng cách ban đầu:** Nếu hai agent xuất phát gần, Ghost dùng giai đoạn đầu để kéo giãn khoảng cách; nếu xuất phát xa, Ghost ưu tiên đứng/di chuyển quanh junction để đọc thuật toán Pacman trước khi dẫn dụ vào loop.
-- **Loop Luring & Loop Commitment:** Ghost tính khoảng cách tới loop/core và chủ động kéo Pacman về vùng có vòng lặp, sau đó ưu tiên duy trì trong loop thay vì chạy vào corridor bị khóa.
+**Student:** 24127192  
+**Phiên bản:** V3.0  
+**File:** `submissions/24127192/agent.py` (~1789 dòng)
 
-### 2. Chi tiết Triển khai và Sự Kết Hợp Các Thuật Toán
-- **Mô hình Pacman đa giả thuyết:** Hàm `_pacman_model_positions` tạo nhiều vị trí Pacman có thể đi tới bằng A* tốc độ 2, BFS chaser tốc độ 2, Greedy tốc độ 2, và vị trí hiện tại. Các giả thuyết này được đưa vào US-L* để xếp hạng theo độ tin cậy.
-- **US-L* confidence-weighted prediction:** Lớp `USLStar` dùng state gồm hướng tương đối Ghost-Pacman, bucket khoảng cách, hướng Ghost vừa đi, cấu trúc ô Pacman đang đứng, và tường xung quanh. Khi quan sát Pacman thật sự di chuyển, Ghost cập nhật thống kê để dự đoán tốt hơn ở các lượt sau.
-- **A* + tốc độ 2:** `_astar_path` tìm đường ngắn nhất bằng Manhattan heuristic, còn `_follow_path_with_speed` mô phỏng Pacman đi tiếp tối đa 2 ô nếu vẫn đi thẳng trên cùng hướng.
-- **Temporal capture ETA:** `_capture_eta` ước lượng số lượt Pacman cần để vào vùng bắt Ghost với `CAPTURE_DISTANCE = 2`. Điểm an toàn bị phạt rất nặng nếu ETA nhỏ, thay vì chỉ dựa vào BFS distance.
-- **Safe area / Voronoi cục bộ:** `_safe_area` flood-fill các ô Ghost có thể tới, chỉ tính điểm cao cho các ô mà Ghost tới trước hoặc còn đủ margin so với Pacman.
-- **Influence Map:** `_pacman_influence` lưu lịch sử vị trí Pacman gần đây và phạt các ô nằm trong vùng Pacman vừa quét qua, tránh việc Ghost chạy ngược vào đường bị kiểm soát.
-- **Greedy ordering + Iterative Deepening:** `_move_order` sắp xếp nước đi bằng heuristic trước, giúp `_search` duyệt các nhánh hứa hẹn trước. Sau đó iterative deepening từ độ sâu thấp lên cao, nếu gần timeout thì trả về nước tốt nhất đã tìm được.
-- **Maximin nhiều nhánh Pacman:** Ở mỗi node, Ghost giả định Pacman có thể đi theo nhánh nguy hiểm nhất trong số các dự đoán hợp lý, nhưng vẫn trừ điểm theo trọng số confidence của US-L*.
-- **Phân loại gần/xa ở lượt đầu:** Agent lưu `_initial_distance` và `_initial_far`. Nếu ban đầu gần, 20 bước đầu dùng `_survival_oracle_move` và `_opening_spread_move` để sống sót/kéo giãn; nếu ban đầu xa, `_far_reading_move` ưu tiên junction hoặc `STAY` an toàn để học hành vi Pacman.
-- **Tính đường về loop:** `_compute_loop_dist` tạo bản đồ khoảng cách tới `loop_set` hoặc core. `_loop_lure_move` dùng khoảng cách này để chọn nước đi kéo Ghost dần vào vùng loop, sau đó `committed=True` để ưu tiên ở lại loop.
-- **STAY có điều kiện:** `_allow_stay` chỉ cho phép đứng yên sau 20 bước, khi khoảng cách đủ xa, hoặc khi ban đầu đã xa. Điều này giúp Ghost đọc Pacman mà không đứng yên quá sớm lúc nguy hiểm.
+---
 
-### 3. Kết Quả Đạt Được và Khả Năng Áp Dụng
-- **Ghost thông minh hơn v3 trong mô hình đối thủ:** V3.5 không còn phụ thuộc tuyệt đối vào một fallback A* duy nhất. Khi Pacman đổi cách di chuyển, US-L* có thể dần tăng trọng số cho hành vi đã quan sát.
-- **Tận dụng bản đồ triệt để hơn:** Ghost biết toàn bộ topology bản đồ, nhận diện core, loop, junction, dead-end depth, safe area và các vùng Pacman vừa kiểm soát.
-- **Ra quyết định có tính chiến thuật hơn:** Ghost cân bằng giữa chạy xa Pacman, giữ nhiều lối thoát, né vùng ảnh hưởng, rẽ hướng phá nội suy vận tốc, và tránh tự nhốt mình vào hành lang/ngõ cụt.
-- **Tương thích với luật `capture_distance = 2`:** Trong agent đã đặt rõ `CAPTURE_DISTANCE = 2`, nên mô hình ETA và điểm nguy hiểm đang đánh giá theo luật bắt cạnh hiện tại.
-- **Cải thiện hành vi ở start ngẫu nhiên:** Với một số vị trí stochastic, Ghost có thể kéo về loop và sống đủ giới hạn bước. Tuy nhiên kết quả phụ thuộc mạnh vào vị trí ban đầu do Pacman tốc độ 2 và capture distance 2.
+## 1. Concept (Ý tưởng thiết kế)
 
-### 4. Hạn Chế và Hướng Tối Ưu Tương Lai
-- **Pacman tốc độ 2 vẫn có lợi thế rất lớn:** Với luật bắt khi Manhattan distance `< 2`, Pacman có thể khóa một số thế cờ rất sớm nếu Ghost xuất phát gần và chỉ được đi 1 ô mỗi lượt.
-- **US-L* cần dữ liệu quan sát:** Ở vài bước đầu, US-L* chưa có đủ thống kê nên vẫn phải dựa nhiều vào A*, BFS và Greedy fallback.
-- **Chi phí tính toán cao hơn v3:** V3.5 dùng nhiều cache cho A*, capture ETA, BFS distance và safe area. Điều này giúp chạy trong timeout trên bản đồ hiện tại, nhưng bản đồ lớn hơn có thể cần giảm độ sâu hoặc giới hạn cache.
-- **Chiến lược loop phụ thuộc vị trí:** Nếu Ghost xuất phát gần Pacman ở thế bị khóa cưỡng bức, việc dẫn dụ vào loop không kịp phát huy trước khi Pacman áp sát.
-- **Tối ưu trong tương lai:**
-  - Thêm transposition table cho `_search` để tái sử dụng trạng thái giữa các nhánh.
-  - Tối ưu mô hình Pacman tốc độ 2 theo đúng từng implementation cụ thể của đối thủ nếu được phép đọc trực tiếp agent đối phương.
-  - Thêm opening book có điều kiện cho các thế xuất phát cố định, nhưng vẫn giữ fallback tổng quát cho map khác.
-  - Mở rộng safe-area thành phân tích choke point / articulation point để né các vùng bị cắt đường trước khi Pacman áp sát.
-  - Tách riêng policy deterministic-start và stochastic-start, vì hai chế độ có cấu trúc rủi ro khác nhau.
+### 1.1. Vấn đề cần giải quyết
 
-### 5. Cách Hoạt Động và Các Case Ra Quyết Định
-Mỗi lượt, Ghost đi qua các bước sau trong hàm `step`:
+Ghost (Hider) cần sống sót tối đa 200 bước trước sự truy đuổi của Pacman (Seeker). Pacman có tốc độ 2 (di chuyển 2 ô mỗi lượt trên đường thẳng), trong khi Ghost chỉ di chuyển 1 ô. Ghost bị bắt khi khoảng cách Manhattan < 2.
 
-- **Case 1: Khởi tạo bản đồ lần đầu.** Ghost chuyển map sang dạng tĩnh, tính danh sách ô đi được, bậc của từng ô, trung tâm bản đồ, vùng core, loop lớn nhất, junction, corridor, dead-end branch và độ sâu ngõ cụt.
-- **Case 2: Không có nước đi hợp lệ.** Nếu Ghost không có ô hợp lệ để đi, trả về `Move.STAY`.
-- **Case 3: Không nhìn thấy Pacman.** Nếu `enemy_position is None`, Ghost không thể dự đoán trực tiếp nên chọn nước đi tới ô có độ cơ động cao nhất, ưu tiên vùng nhiều lối thoát.
-- **Case 4: Có quan sát Pacman mới.** Ghost so sánh vị trí Pacman hiện tại với vị trí Pacman lượt trước để lấy hành động thật của Pacman, cập nhật US-L*, đồng thời điều chỉnh tốc độ Pacman quan sát được nếu Pacman đi nhiều hơn dự kiến.
-- **Case 5: Sinh dự đoán Pacman.** Ghost tạo nhiều giả thuyết: Pacman A* tới Ghost hiện tại, A* tới vị trí Ghost bị nội suy vận tốc, BFS chaser, Greedy best-first, và trạng thái đứng yên. US-L* xếp hạng các giả thuyết này thành danh sách `(vị trí, trọng số, nguồn dự đoán)`.
-- **Case 6: Xác định chiến lược theo khoảng cách ban đầu.** Lần đầu thấy Pacman, Ghost lưu `_initial_distance`. Nếu khoảng cách ban đầu nhỏ hơn nửa chiều dài map thì xem là start gần; ngược lại xem là start xa.
-- **Case 7: Start gần, 20 bước đầu kéo giãn.** Ghost dùng survival oracle và opening spread để tăng khoảng cách, tránh quay lại ô vừa đi, ưu tiên core/junction/safe area để có đủ thời gian học US-L*.
-- **Case 8: Start xa, 20 bước đầu đọc Pacman.** Ghost đi tới junction/ngã rẽ hoặc có thể `STAY` nếu ETA an toàn và khoảng cách đủ xa, nhằm quan sát Pacman di chuyển để cập nhật US-L*.
-- **Case 9: 10 bước tiếp theo dẫn dụ vào loop.** Sau 20 bước đầu, `_loop_lure_move` ưu tiên giảm khoảng cách tới loop/core, đồng thời vẫn giữ ETA an toàn và làm Manhattan distance biến đổi để Pacman phải replanning.
-- **Case 10: Sau giai đoạn dẫn dụ, commit vào loop/counter-loop.** Nếu Ghost đã gần loop hoặc ban đầu xa, agent ưu tiên ở lại vùng loop và dùng counter-loop để kéo Pacman theo vòng thay vì chạy thẳng vào corridor.
-- **Case 11: Nguy hiểm sát mặt.** Nếu một dự đoán Pacman đang cách Ghost quá gần, Ghost dùng `_panic_move`: chọn nước vừa tăng an toàn tức thì, vừa ưu tiên core/loop/junction và tránh dead-end.
-- **Case 12: Trạng thái bình thường.** Ghost tạo danh sách nước đi hợp lệ, chấm điểm từng nước bằng `_cell_safety_score`, `_anti_velocity_score`, rồi dùng Greedy best-first ordering để đưa nước tốt vào search trước.
-- **Case 13: Tìm kiếm sâu.** `_search` chạy iterative deepening maximin. Với mỗi nước Ghost thử đi, Pacman được mô phỏng bằng nhiều nhánh dự đoán; Ghost lấy nhánh xấu nhất hợp lý để tránh lạc quan quá mức.
-- **Case 14: Gần hết thời gian.** Nếu thời gian gần chạm `TIME_BUDGET`, search dừng và trả về nước tốt nhất đã tìm được ở độ sâu hoàn chỉnh trước đó, tránh timeout.
-- **Case 15: Cập nhật lịch sử.** Sau khi chọn nước, Ghost lưu vị trí hiện tại vào lịch sử để lượt sau dùng cho anti-velocity, tránh lặp lại, và cập nhật mô hình US-L*.
+### 1.2. Ý tưởng chính
 
-Tóm lại, Ghost v3.5 hoạt động theo phong cách "dự đoán nhiều kịch bản rồi chọn nước sống sót tốt nhất": trước hết học Pacman bằng US-L*, sau đó mô phỏng Pacman bằng A*/BFS/Greedy, đánh giá từng ô bằng ETA + safe area + topology + influence map, chọn phase gần/xa theo khoảng cách ban đầu, dẫn dụ về loop khi có điều kiện, cuối cùng dùng iterative deepening để chọn nước ít rủi ro nhất trong các nhánh Pacman có thể xảy ra.
+Thay vì dùng 1 thuật toán cố định (greedy, minimax, hay MCTS), V3 kết hợp **nhiều policy song song** thông qua kiến trúc **Policy Portfolio + Safety Shield**:
+
+- **Nhiều policy cùng đề xuất** nước đi → mỗi policy tạo ra 1 `Proposal` chứa giá trị, rủi ro, độ tin cậy.
+- **Safety Shield 4 lớp** lọc bỏ action nguy hiểm trước khi chọn.
+- **Arbitrator** chấm điểm tổng hợp và chọn action tốt nhất.
+- **Budget Controller** phân bổ thời gian tính toán theo mức độ nguy hiểm.
+
+### 1.3. Các thuật toán/chiến lược cốt lõi
+
+| Thuật toán | Mục đích |
+|---|---|
+| MapRepository (fingerprint cache) | Cache bản đồ ngay lần đầu, tránh tính lại |
+| TopologyAnalyzer (Tarjan) | Phát hiện dead-end, junction, chokepoint, tunnel, loop, core |
+| PacmanTracker (Belief State) | Phân phối xác suất vị trí Pacman khi mất dấu |
+| OpponentModelEnsemble (6 models) | Dự đoán Pacman từ nhiều góc nhìn, tự điều chỉnh trọng số |
+| TimeExpandedDanger | Danger map theo thời gian (multi-horizon) |
+| SurvivalMargin | Đánh giá ghost có kịp thoát trước Pacman không |
+| LocalViability | Kiểm tra vị trí có sống được K bước không |
+| Monte Carlo V3 (CVaR) | Rollout 8 lần, depth 15, đánh giá bằng CVaR_20 |
+| Alpha-Beta + TT | Tìm kiếm sâu với transposition table |
+| Safety Shield | Lọc 4 mức: legal → capture → danger → viability |
+| Policy Portfolio + Arbitrator | 5 policy đề xuất, Arbitrator chọn tối ưu |
+| BudgetController | 5 chế độ: cheap / normal / combat / tunnel_escape / emergency |
+| PacmanStyleClassifier | Nhận diện style Pacman online |
+| AntiLoop | Chống lặp vòng bằng visit count + edge count + cycle detection |
+
+---
+
+## 2. Luồng hoạt động (Pipeline mỗi step)
+
+Mỗi lượt `GhostAgent.step()` thực hiện 12 bước tuần tự:
+
+```
+┌─────────────────────────────────────────────────────┐
+│ 1. MapRepository.get(map_state)                      │
+│    → Cache/lấy (MapCache, Topology, DistCache, OT)   │
+│                                                       │
+│ 2. Ghi nhận vị trí ghost (ghost_hist + AntiLoop)      │
+│                                                       │
+│ 3. PacmanTracker.update(enemy_position)               │
+│    → Cập nhật belief distribution                     │
+│                                                       │
+│ 4. OpponentModelEnsemble.update_if_observed()         │
+│    → Cập nhật Markov O1/O2 + trọng số ensemble       │
+│    → PacmanStyleClassifier.update()                   │
+│                                                       │
+│ 5. Ensemble.predict_positions_2step()                 │
+│    → Dự đoán vị trí Pacman trong 2 bước tới          │
+│                                                       │
+│ 6. RiskEngine                                         │
+│    → TimeExpandedDanger (horizon=3)                   │
+│    → SurvivalMargin (margin = pac_arrival - ghost)    │
+│                                                       │
+│ 7. BudgetController.select_mode()                     │
+│    → cheap / normal / combat / tunnel_escape / emergency│
+│                                                       │
+│ 8. PolicyPortfolio.select_policies(mode, style)       │
+│    → Chọn tập policies phù hợp với tình huống        │
+│                                                       │
+│ 9. Thu thập Proposals từ các policy đã chọn           │
+│    → HybridPolicy (MC + table + flee)                 │
+│    → TablePolicy (offline lookup + safety)            │
+│    → AlphaBetaPolicy (ID α-β + TT)                   │
+│    → OnePlyPolicy (đánh giá 1 bước)                  │
+│    → GreedyPolicy (distance + danger + escape)        │
+│    → Tunnel escape override                           │
+│                                                       │
+│ 10. SafetyShield.filter(proposals)                    │
+│     Level 1: legal (valid cell + legal move)          │
+│     Level 2: immediate capture (Pacman reach next)    │
+│     Level 3: time-expanded danger < FATAL_DANGER      │
+│     Level 4: local viability (sống được K bước)       │
+│                                                       │
+│ 11. Arbitrator.choose_best(safe_proposals)            │
+│     score = value - 0.35*risk + 0.15*confidence       │
+│             - 0.05*cost                               │
+│                                                       │
+│ 12. Validate / STAY                                   │
+│     → Kiểm tra action hợp lệ, fallback = STAY        │
+└─────────────────────────────────────────────────────┘
+```
+
+### 2.1. Chi tiết các thành phần
+
+#### MapRepository (dòng 229–299)
+- Nhận diện map bằng **fingerprint** (hash bytes).
+- Lần đầu: xây `_MapCache` (valid_cells, adjacency), `TopologyAnalyzer`, `DistanceCache` (BFS lazy + precompute junctions/chokepoints), `OfflineTable`.
+- Class-level `_store` để chia sẻ cache giữa các instance.
+
+#### TopologyAnalyzer (dòng 302–470)
+- **Dead-end propagation:** Từ các cell degree ≤ 1, lan rộng theo kiểu "peeling" để tìm toàn bộ nhánh ngõ cụt + ghi `trap_depth`.
+- **2-core:** Loại lặp cell degree ≤ 1 cho đến khi ổn định → core an toàn.
+- **Largest loop:** DFS tìm cycles trong core, chọn cycle dài nhất.
+- **Chokepoints:** Thuật toán Tarjan iterative tìm articulation points.
+- **Tunnels:** Từ junction, đi theo corridor cho đến junction kế tiếp.
+- **Escape capacity:** Đếm số exit không dẫn vào dead-end cho mỗi cell.
+
+#### PacmanTracker (dòng 474–527)
+- Khi Pacman **visible**: belief = `{pac_pos: 1.0}`.
+- Khi Pacman **invisible**: lan truyền belief qua `_pacman_reach()`, prune giữ top 18 cells.
+- Thuộc tính `best_estimate` trả cell xác suất cao nhất.
+
+#### OpponentModelEnsemble (dòng 686–800)
+6 sub-models chạy song song:
+
+| Model | Logic |
+|---|---|
+| MarkovOrder1 | State = (relative_bucket, distance_bucket, geometry) → action count |
+| MarkovOrder2 | State = (prev_action, relative_bucket) → action count, yêu cầu ≥ 3 mẫu |
+| ShortestPathModel | BFS weight: 1/distance tới ghost |
+| InterceptionModel | Ưu tiên move tới junction/chokepoint gần ghost |
+| RandomLegalModel | Phân phối đều các move hợp lệ |
+| AdversarialModel | Minimax 1-ply: Pacman chọn move tệ nhất cho ghost escape |
+
+**Weight update:** Sau mỗi bước Pacman quan sát được:
+```
+error = -log(predicted_prob)
+weight *= exp(-0.12 * error)
+normalize(weights)
+```
+
+**2-step prediction:** `predict_positions_2step()` kết hợp ensemble distribution bước 1, rồi mở rộng bước 2 qua ensemble lần nữa. Thêm greedy fallback (Pacman tiến gần ghost = xác suất 0.45).
+
+#### RiskEngine (dòng 802–895)
+- **TimeExpandedDanger:** Tạo `danger[t][cell]` cho t = 0..3. Mỗi horizon: tính danger từ belief, lan truyền distribution, áp dụng tunnel penalty.
+- **SurvivalMargin:** Tìm exit tốt nhất (core/loop/junction), tính `margin = pac_arrival_time - ghost_arrival_time`. Pac arrival tính theo speed 2.
+- **LocalViability:** Cell viable nếu: escape_capacity ≥ 3, hoặc nằm trong core/loop, hoặc survival_margin ≥ 1, hoặc xa Pacman ≥ 5 + có ≥ 2 exit.
+
+#### SafetyShield (dòng 943–1000)
+4 mức lọc tuần tự:
+1. **Legal:** Cell hợp lệ + move nằm trong legal moves.
+2. **Capture:** Pacman (với speed 2) có thể bắt ghost ở vị trí mới ngay lượt sau? (belief ≥ 15%).
+3. **Danger:** `danger_t0[nxt] < FATAL_DANGER (120.0)`.
+4. **Viability:** Cell phải viable theo RiskEngine.
+
+Nếu không cell nào qua cả 4 mức → **relaxed fallback**: sắp xếp theo khoảng cách xa nhất từ Pacman.
+
+#### MCRolloutV3 (dòng 1002–1113)
+- 8 rollouts mỗi move, depth 15.
+- Ghost policy: ưu tiên core/loop/junction, phạt dead-end/tunnel, kịch bản đa dạng (`scenario % 4`).
+- Pacman response: dùng ensemble prediction, chọn action theo scenario (`scenario % 3`).
+- **CVaR scoring:** `score = 0.40 × mean + 0.60 × CVaR_20` (trung bình 20% rollout tệ nhất).
+  → Ưu tiên action có worst-case tốt, không chỉ mean tốt.
+
+#### AlphaBetaSearch (dòng 1115–1212)
+- Iterative deepening, max depth 7.
+- **Transposition table** (40K entries) tránh tính lại state.
+- **Move ordering:** Ghost moves sắp theo distance xa Pacman giảm dần. Pacman moves sắp theo ensemble prediction + distance.
+- Pacman phản ứng: lấy top 3 ensemble predictions + pacman_reach, giới hạn 5 options.
+- Anti-oscillation: bỏ qua move vào ghost_hist[-4:].
+- Time check: dừng nếu > 72% budget.
+
+#### Policies (dòng 1338–1528)
+5 policy tạo `Proposal`:
+
+| Policy | Khi nào | Logic | Confidence |
+|---|---|---|---|
+| HybridPolicy | Pac visible, dist ≤ 8 | MC CVaR + table value + flee distance - danger - loop_pen | high |
+| TablePolicy | Position có trong offline table | Offline lookup + danger check + dead-end check | medium |
+| AlphaBetaPolicy | Pac visible, đủ budget | Iterative deepening α-β | high |
+| OnePlyPolicy | Luôn | Đánh giá 1 bước: distance × Markov + topology + danger + anti-loop | medium |
+| GreedyPolicy | Luôn | min_distance × 10 - danger + escape_capacity - dead-end penalty | low |
+
+#### BudgetController (dòng 1309–1336)
+5 chế độ dựa trên tình huống:
+
+| Mode | Điều kiện | Policies chạy |
+|---|---|---|
+| emergency | danger ≥ 80% FATAL | Greedy + OnePly |
+| tunnel_escape | Trong tunnel, Pac gần entrance ≤ 4 | OnePly + Greedy |
+| combat | Pac visible, dist ≤ 8 | Hybrid + AB + OnePly + Greedy |
+| cheap | Pac xa > 15 | Table + Greedy |
+| normal | Mặc định | Table + OnePly + AB + Greedy |
+
+#### PacmanStyleClassifier (dòng 1246–1286)
+Online tracking:
+- **distance_reduction_rate:** % moves làm giảm distance tới ghost.
+- **chokepoint_preference:** % moves đi vào chokepoint/junction.
+- Phân loại: `SHORTEST_PATH_CHASER` (dr > 0.8), `INTERCEPTOR` (choke > 0.55), `RANDOM_EXPLORER` (dr < 0.35), `GREEDY_CHASER` (default).
+- Style ảnh hưởng thứ tự policy trong combat mode.
+
+#### AntiLoop (dòng 1214–1244)
+- `visit_count[cell]`: số lần ghost đã ghé.
+- `edge_count[(prev, cur)]`: số lần đi cạnh này.
+- **Cycle detection:** Nếu move quay đầu (nxt == recent[-2]) → penalty +20. Nếu pattern lặp 3 lần → penalty +30.
+- Khi Pac gần và ghost đang trong loop region → giảm penalty (loop là chiến thuật sống tốt).
+
+#### Diagnostics (dòng 1288–1307)
+- `policy_failures`: đếm số lần mỗi policy throw exception.
+- `policy_usage`: đếm số lần mỗi policy được chọn.
+- `safety_rejections`: số lần Safety Shield loại bớt proposals.
+
+---
+
+## 3. Những cải tiến đã thực hiện (V1 → V3)
+
+### 3.1. So sánh V1 (old.py) → V3 (agent.py)
+
+| Tính năng | V1 (old.py, 351 dòng) | V3 (agent.py, 1789 dòng) |
+|---|---|---|
+| Map cache | Không có, tính BFS mỗi bước | MapRepository + fingerprint hash, precompute junctions |
+| Topology | `Topo` đơn giản (chỉ dead-end branches) | TopologyAnalyzer: dead-ends, junctions, corridors, core, loops, chokepoints (Tarjan), tunnels, trap_depth, escape_capacity |
+| Pacman tracking | `last_pp` (vị trí cuối) | BeliefState phân phối xác suất, propagation khi invisible |
+| Dự đoán Pacman | `USLStar` + `_predict_astar_seeker` (A* hardcode) | OpponentModelEnsemble 6 models + adaptive weight update |
+| Danger map | Không có | TimeExpandedDanger multi-horizon (t=0..3) |
+| Tìm kiếm | Iterative Deepening DFS + `lru_cache` A* | Alpha-Beta với transposition table (40K) + move ordering |
+| Monte Carlo | Không có | MCRolloutV3: 8 rollouts, depth 15, CVaR_20 scoring |
+| Decision | Strict fallback (1 layer trả, bỏ qua các layer sau) | PolicyPortfolio: 5 policies song song → Arbitrator chọn tốt nhất |
+| Safety | Không có (chỉ kiểm tra distance < 2) | SafetyShield 4 mức (legal → capture → danger → viability) |
+| Anti-loop | Không có | visit_count + edge_count + cycle detection |
+| Adaptation | Phụ thuộc A* hardcode | BudgetController 5 modes + PacmanStyleClassifier |
+| Diagnostics | Không có | Policy failures, usage, safety rejections |
+
+### 3.2. Cải tiến chi tiết
+
+1. **Map caching triệt để:** Lần đầu xây map mất ~20ms, các lần sau O(1) lookup qua fingerprint.
+2. **Topology phong phú hơn:** V1 chỉ biết dead-end branches. V3 biết chokepoints (Tarjan), tunnels, loops, core, trap_depth, escape_capacity → ghost biết vùng nào an toàn, vùng nào bẫy.
+3. **Belief state thay vì last_known_position:** Khi Pacman biến mất, V3 lan truyền xác suất thay vì giữ vị trí cũ đã lỗi thời.
+4. **Ensemble thay vì hardcode A*:** V1 hardcode logic A* của đối thủ cụ thể. V3 dùng 6 models tổng quát, tự học trọng số → thích ứng với MỌI loại Pacman.
+5. **Safety Shield ngăn action nguy hiểm:** V1 không có cơ chế chặn → ghost dễ bị dồn vào dead-end. V3 lọc 4 mức nghiêm ngặt.
+6. **CVaR thay vì mean scoring:** V1 chỉ dùng evaluation function. V3 dùng CVaR_20 → ưu tiên action có worst-case tốt, tránh action 90% tốt nhưng 10% chết.
+7. **Anti-loop:** V1 ghost hay rung qua lại 2 ô. V3 phạt visit_count + edge_count + cycle detection.
+8. **Budget Controller:** V1 hay timeout (> 0.95s). V3 phân bổ budget theo tình huống, mode emergency chỉ chạy Greedy+OnePly.
+
+---
+
+## 4. Kết quả Benchmark
+
+### Benchmark: Ghost V3 vs tất cả Pacman trong `pacman/sum` (deterministic, no-viz, pacman_speed=2)
+
+| Pacman Agent | Kết quả | Steps |
+|---|---|---|
+| 02 | **ghost_wins** ✅ | 200 |
+| 3 | **ghost_wins** ✅ | 200 |
+| 5 | **ghost_wins** ✅ | 200 |
+| 6 | **ghost_wins** ✅ | 200 |
+| 7 | **ghost_wins** ✅ | 200 |
+| 8 | pacman_wins ❌ | 41 |
+| 9 | **ghost_wins** ✅ | 1 (agent lỗi syntax) |
+| 10 | **ghost_wins** ✅ | 200 |
+| 11 | **ghost_wins** ✅ | 200 |
+| 12 | pacman_wins ❌ | 149 |
+| 13 | **ghost_wins** ✅ | 200 |
+| 15 | **ghost_wins** ✅ | 200 |
+| 16 | **ghost_wins** ✅ | 200 |
+| Max Verstappen | pacman_wins ❌ | 118 |
+
+- **Win rate:** 11/14 (78.6%)
+- **Average steps:** 164.93
+- **Ghost thua 3 ván:** agents 8, 12, Max Verstappen
+
+---
+
+## 5. Hạn chế và Cải thiện trong tương lai
+
+### 5.1. Hạn chế hiện tại
+
+1. **Thua trước Pacman mạnh (agents 8, 12, Max Verstappen):** Các Pacman sử dụng chiến thuật chặn đường (interception) hoặc A* tốc độ 2 kết hợp ngoại suy vận tốc có thể dồn ghost vào góc trước khi Safety Shield kịp phản ứng.
+2. **Ensemble chậm hội tụ:** Cần ~8-10 bước quan sát trước khi trọng số ensemble ổn định. Trong 8 bước đầu, dự đoán Pacman còn sai lệch.
+3. **LocalViability quá đơn giản:** Hiện chỉ kiểm tra escape_capacity + survival_margin. Chưa thực sự chạy minimax K-step để xác minh ghost có thoát được hay không.
+4. **Chưa có Quiescence Search:** Alpha-Beta có thể bị horizon effect — đánh giá state "an toàn" nhưng thực chất Pacman bắt ở bước tiếp.
+5. **MC Rollout chưa adaptive:** Luôn chạy 8 rollouts. Khi danger cao nên tăng lên 16-32, khi Pacman xa nên giảm xuống 4.
+6. **Tunnel escape đơn giản:** Hiện chỉ chạy BFS tới exit xa Pacman. Chưa xét trường hợp Pacman chặn cả 2 đầu tunnel.
+7. **Không có Zobrist Hashing:** Transposition table dùng tuple key, chậm hơn Zobrist hash.
+8. **Chưa có Influence Map:** Chưa phát hiện trước hướng bị bao vây nếu 2+ Pacman vây bắt.
+
+### 5.2. Hướng cải thiện tương lai
+
+1. **Nâng cấp LocalViability thành full Viability Kernel:** Chạy backward induction K=5 bước để xác minh chính xác ghost có thoát được hay không trước khi chấp nhận action.
+2. **Quiescence Search cho Alpha-Beta:** Mở rộng search khi state ở biên horizon có capture ngay (capture extension).
+3. **Adaptive MC Rollouts:** Tăng/giảm số rollouts theo urgency:
+   - emergency: 2 rollouts (tiết kiệm budget)
+   - combat: 16-24 rollouts (cần quyết định chính xác)
+   - cheap: 0 rollouts (chỉ dùng table/greedy)
+4. **Zobrist Hashing:** Thay tuple key bằng XOR hash → transposition table nhanh hơn.
+5. **Tunnel Solver nâng cao:** Khi ghost ở trong tunnel, tính chính xác xem ghost có thoát kịp không dựa trên Pacman distance tới cả 2 entrance.
+6. **Multi-agent support:** Nếu arena mở rộng 2 Pacman vây 1 Ghost, cần Influence Map để phát hiện hướng bị kẹp.
+7. **MCTS (Monte Carlo Tree Search):** Thay MC Rollout bằng MCTS với UCB1 selection → rollout sâu hơn, tận dụng tree structure.
+8. **Offline Training:** Chạy self-play offline để pre-train Markov model và offline table tốt hơn, thay vì học online từ đầu mỗi trận.
+9. **Reinforcement Learning:** Dùng PPO/DQN để train ghost policy offline, dùng như model thứ 7 trong ensemble.
