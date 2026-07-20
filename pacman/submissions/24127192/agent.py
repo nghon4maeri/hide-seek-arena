@@ -1746,38 +1746,3 @@ class GhostAgent(BaseGhostAgent):
         if _valid(nxt, ms) and move in legal:
             return move
         return legal[0] if legal else Move.STAY
-
-
-# ===================================================================
-# Pacman Agent (BFS pursuit stub)
-# ===================================================================
-
-class PacmanAgent(BasePacmanAgent):
-    def __init__(self, **kwargs) -> None:
-        super().__init__(**kwargs)
-
-    def step(self, map_state, my_position, enemy_position, step_number: int):
-        me = (int(my_position[0]), int(my_position[1]))
-        ms = np.asarray(map_state, dtype=int)
-        cands = _legal(me, ms)
-        if not cands:
-            return Move.STAY
-        if enemy_position is None:
-            return cands[0]
-        ghost = (int(enemy_position[0]), int(enemy_position[1]))
-        d: Dict[Pos, int] = {ghost: 0}
-        q: deque[Pos] = deque([ghost])
-        while q:
-            cur = q.popleft()
-            for m in MOVE_ORDER:
-                nxt = _apply(cur, m)
-                if nxt not in d and _valid(nxt, ms):
-                    d[nxt] = d[cur] + 1
-                    q.append(nxt)
-        best_m = cands[0]; best_d = float("inf")
-        for m in cands:
-            nxt = _apply(me, m)
-            dist = d.get(nxt, float("inf"))
-            if dist < best_d:
-                best_d = dist; best_m = m
-        return best_m
