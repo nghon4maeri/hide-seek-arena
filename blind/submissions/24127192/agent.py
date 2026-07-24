@@ -1768,26 +1768,3 @@ class GhostAgent(BaseGhostAgent):
         if _valid(nxt, ms) and move in legal:
             return move
         return legal[0] if legal else Move.STAY
-
-
-# ===================================================================
-# PacmanAgent — placeholder (focus is GhostAgent)
-# ===================================================================
-class PacmanAgent(BasePacmanAgent):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.pacman_speed = max(1, int(kwargs.get("pacman_speed", 2)))
-        self.memory_map = None
-        self.last_seen_enemy = None
-
-    def _update_memory(self, map_state):
-        if self.memory_map is None:
-            self.memory_map = np.full_like(map_state, -1, dtype=int)
-        visible_mask = (map_state != -1)
-        self.memory_map[visible_mask] = map_state[visible_mask]
-
-    def step(self, map_state, my_position, enemy_position, step_number):
-        self._update_memory(map_state)
-        if enemy_position is not None:
-            self.last_seen_enemy = tuple(enemy_position)
-        return Move.STAY
