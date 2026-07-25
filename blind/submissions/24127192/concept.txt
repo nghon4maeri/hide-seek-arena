@@ -1,0 +1,47 @@
+Hãy đọc các documents: Blind-2526-4.pdf, các readme.md và các file .py trong các thư mục blind/src/ và blind/submissions/24127192/
+sau đó:
+*Hãy thực hiện xây dựng Blind Ghost Agent với các yêu cầu sau:
+**Ý tưởng: 
+- Thực hiện cache map hardcode và vị trí của pacman khi bắt đầu tại với layout được cung cấp như dưới
+layout = [
+            "#####################",
+            "#.........#.........#",
+            "#.###.###.#.###.###.#",
+            "#...................#",
+            "#.###.#.#####.#.###.#",
+            "#.....#...#...#.....#",
+            "#####.###.#.###.#####",
+            "#...#.#.......#.#...#",
+            "#####.#.#####.#.#####",
+            "#.........G.........#",
+            "#####.#.#####.#.#####",
+            "#...#.#.......#.#...#",
+            "#####.#.#####.#.#####",
+            "#.........#.........#",
+            "#.###.###.#.###.###.#",
+            "#...#.....P.....#...#",
+            "###.#.#.#####.#.#.###",
+            "#.....#...#...#.....#",
+            "#.#######.#.#######.#",
+            "#...................#",
+            "#####################"
+        ]
+- Nếu ở steps đầu với tầm nhìn mà không thấy map giống như đã cache, thay đổi chuyển thuật dự đoán vị trí pacman, ưu tiên Monte Carlo
+- Cache given map để không cần load lại map mỗi khi di chuyển
+- Sử dụng các thuật toán A* Manhattan, Monte Carlo, Flood fill và giải thuật hành lang để tính toán khoảng cách từ vị trí hiện tại đến các vùng trống 
+- Thực hiện dự đoán vùng di chuyển của pacman agent dựa trên vị trí ban đầu và từ đó đi hướng ngược lại giúp kéo dài thời gian sống sót của ghost agent
+- Các thuật toán được dưa trên Non-blind Ghost agent ở blind/submissions/24127192/non_blind_agent.py nhưng cần phải thay đổi lại cho phù hợp với tính năng của Blind Mode (vision = 5)
+- Yêu cầu phải tối ưu thời gian phản hồi trong 0.9s phù hợp với yêu cầu của hệ thống chấm điểm
+- Tận dụng không gian lớn của map để ưu tiên các di chuyển rộng thay vì di chuyển loanh quanh, nhưng phải suy tính để tránh pacman bắt
+- Các thuật toán phải linh hoạt , thay đổi theo tình huống và vị trí hiện tại của pacman agent
+- Triển khai blind ghost agent theo multi-layers như ở non-blind ghost version 
+- Nếu trong quá trình di chuyển mà gặp pacman, phải cố gắng di chuyển rẻ nhánh nằm ở hướng ngược lại của pacman, thực hiện ưu tiên rẽ nhánh để - tránh cùng nằm trên đường thẳng với pacman
+
+**Một số điều kiện cần phải tuần thủ khi thực hiện Blind Ghost Agent như sau:
+- Các nội dung source code chỉ được phép thực hiện tại file blind/submissions/24127192/agent.py
+- Đọc rõ các điều kiện, luật chơi được quy định trong file blind/src/, blind/src/ và blind/submissions/24127192/README.md
+- Trước khi thực hiện, yêu cầu phải thinking deeply và ghi những hướng dự định ra implementation_plan.md để được duyệt hoặc hiệu chỉnh, không được tự ý thực hiện khi chưa được duyệt
+- Trong quá trình tìm hiểu thực hiện, nếu có ý tưởng gì hay ho để cải thiện hay làm cho Blind Ghost Agent thông minh hơn, hãy ghi chú vào đưa vào add_plan.md để được duyệt hoặc hiệu chỉnh
+- Sau khi thực hiện, ghi những gì đã thực ra ra blind/submissions/24127192/NOTES.md theo cấu trúc: 1. Ý tưởng, 2. Chi tiết triển khai, 3. Kết quả đạt được và khả năng áp dụng, 4. Nhược điểm và hướng cải tiến
+- Chỉ được tập trung vào việc kiểm thử với chế độ cố định và tầm nhìn = 5
+- Sau khi cài đặt được blind ghost agent, hãy chỉ benchmark với 24127457/agent.py và 24127561/agent.py
