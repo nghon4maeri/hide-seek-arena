@@ -1,34 +1,29 @@
-"""GhostAgent — Blind Hider (Lab 2: Partial Observability).
+"""Blind Multi-Layer Ghost Agent — 24127192.
 
-Student: 24127192
-Role:    Hide Agent Engineer
-Version: V1.0
+Kiến trúc Multi-Layer cho Blind Mode (Partial Observability, vision=5):
+  Layer 0: Hardcoded Map + Precomputed Topology
+  Layer 1: Memory Map Accumulation
+  Layer 2: Pacman Belief State Tracking
+  Layer 3: 6-Model Opponent Ensemble
+  Layer 4: Risk Engine (danger, survival margin, viability)
+  Layer 5: Monte Carlo Rollout V3 (CVaR)
+  Layer 6: Alpha-Beta Search (TT + iterative deepening)
+  Layer 7: 5-Policy Portfolio + Arbitrator
+  Layer 8: Safety Shield + Budget Controller
+  Layer 9: Exploration + Anti Line-of-Sight
 
-Core algorithms:
-- Belief-State Monte Carlo Planning (POMCP-lite): Ghost maintains a
-  probability distribution over Pacman's likely positions and runs MC
-  rollouts through the belief state.
-- Pursuit-Evasion Search: Paranoid/worst-case adversarial model for
-  Pacman — assume Pacman plays optimally against Ghost.
-- Paranoid Search (alpha-beta with min-over-Pacman-branches):
-  Used for deep tactical look-ahead when Pacman is visible.
-- Information Set MCTS rollouts: Ghost enumerates plausible Pacman
-  positions weighted by belief state and simulates deterministic scenarios.
-- USL* Online Learning: Tracks Pacman action frequencies in
-  abstract states to refine belief updates.
-- Memory Map: accumulates cross-step observations (0 / 1 / -1).
-- Topology analysis: precomputes dead-ends, junctions, loops, core
-  on the known map to bias all heuristics.
+Tập trung: fixed starts, vision=5, response < 0.9s.
 """
 
 from __future__ import annotations
 
-import heapq
+import math
 import sys
 import time
+import heapq
 from collections import Counter, defaultdict, deque
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
@@ -41,50 +36,88 @@ from agent_interface import PacmanAgent as BasePacmanAgent
 from environment import Move
 
 # ===================================================================
-# Type aliases
-# ===================================================================
-Pos = Tuple[int, int]
-
-# ===================================================================
 # Constants
 # ===================================================================
+Pos = Tuple[int, int]
+Action = Tuple[int, int]
+
 MOVE_ORDER: Tuple[Move, ...] = (Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT)
 
-TIME_BUDGET       = 0.82   # hard step budget (s), below arena's 1s timeout
-CAPTURE_DISTANCE  = 2      # Manhattan < 2 → caught
-INF               = 10**9
+TIME_BUDGET        = 0.85
+CAPTURE_DISTANCE   = 2
+INF                = 10 ** 9
+FATAL_DANGER       = 120.0
 
-# Belief-state parameters
-BELIEF_PARTICLES  = 28     # max weighted hypotheses retained
-DEFAULT_PACMAN_START = (15, 10)
-VISION_RADIUS     = 5
+# MC V3
+MC_ROLLOUTS        = 8
+MC_DEPTH           = 12
+MC_CAPTURE_PENALTY = 120_000.0
+MC_SURVIVE_BONUS   = 8_000.0
+CVAR_ALPHA         = 0.20
+CVAR_WEIGHT        = 0.60
+MEAN_WEIGHT        = 0.40
 
-# Monte Carlo
-MC_ROLLOUTS       = 10     # deterministic scenario rollouts per move
-MC_HORIZON        = 10     # steps per rollout
-MC_CAPTURE_PENALTY= 120_000.0
-MC_SURVIVE_BONUS  = 8_000.0
+# Alpha-Beta
+AB_MAX_DEPTH       = 6
+PANIC_DISTANCE     = 8
 
-# Paranoid / Alpha-Beta
-AB_MAX_DEPTH      = 7
-PANIC_DISTANCE    = 8      # BFS ≤ this → switch to paranoid search
+# Ensemble
+ENSEMBLE_LR        = 0.12
+MIN_MODEL_WEIGHT   = 0.03
 
-# Anti-oscillation
-HISTORY_LEN       = 8
+# Arbitrator
+RISK_WEIGHT        = 0.35
+CONFIDENCE_WEIGHT  = 0.15
+COST_WEIGHT        = 0.05
 
-# USL* abstract state
-USL_LIMIT         = 5
+# History & Anti-loop
+HISTORY_LEN        = 12
+BELIEF_MAX_CELLS   = 18
+DANGER_HORIZON     = 3
+MARKOV_LIMIT       = 6
+
+# Hardcoded Known Layout
+KNOWN_LAYOUT_STR = [
+    "#####################",
+    "#.........#.........#",
+    "#.###.###.#.###.###.#",
+    "#...................#",
+    "#.###.#.#####.#.###.#",
+    "#.....#...#...#.....#",
+    "#####.###.#.###.#####",
+    "#...#.#.......#.#...#",
+    "#####.#.#####.#.#####",
+    "#.........G.........#",
+    "#####.#.#####.#.#####",
+    "#...#.#.......#.#...#",
+    "#####.#.#####.#.#####",
+    "#.........#.........#",
+    "#.###.###.#.###.###.#",
+    "#...#.....P.....#...#",
+    "###.#.#.#####.#.#.###",
+    "#.....#...#...#.....#",
+    "#.#######.#.#######.#",
+    "#...................#",
+    "#####################",
+]
+
+PACMAN_START: Pos = (15, 10)
+GHOST_START: Pos = (9, 9)
+
+CONF_MAP = {"high": 1.0, "medium": 0.5, "low": 0.2}
+
 
 # ===================================================================
-# Grid utilities (work on numpy memory maps)
+# Grid Utilities
 # ===================================================================
-
 def _shape(ms) -> Tuple[int, int]:
-    return int(ms.shape[0]), int(ms.shape[1])
+    if hasattr(ms, "shape"):
+        return int(ms.shape[0]), int(ms.shape[1])
+    return len(ms), len(ms[0]) if ms else 0
 
 
 def _cell(ms, r: int, c: int) -> int:
-    return int(ms[r, c])
+    return int(ms[r, c]) if hasattr(ms, "shape") else int(ms[r][c])
 
 
 def _apply(pos: Pos, move: Move) -> Pos:
@@ -92,22 +125,18 @@ def _apply(pos: Pos, move: Move) -> Pos:
 
 
 def _valid(pos: Pos, ms) -> bool:
-    """Valid: in-bounds and not a confirmed wall (1).
-    Unseen cells (-1) are treated as traversable (optimistic)."""
+    """Valid if within bounds and not wall (1). -1 (unseen) = optimistic traversable."""
     r, c = pos
     h, w = _shape(ms)
     return 0 <= r < h and 0 <= c < w and _cell(ms, r, c) != 1
 
 
-def _valid_known(pos: Pos, ms) -> bool:
-    """Valid: in-bounds and confirmed passable (0)."""
-    r, c = pos
-    h, w = _shape(ms)
-    return 0 <= r < h and 0 <= c < w and _cell(ms, r, c) == 0
-
-
 def _legal(pos: Pos, ms) -> List[Move]:
     return [m for m in MOVE_ORDER if _valid(_apply(pos, m), ms)]
+
+
+def _neighbors(pos: Pos, ms) -> List[Pos]:
+    return [_apply(pos, m) for m in MOVE_ORDER if _valid(_apply(pos, m), ms)]
 
 
 def _manhattan(a: Pos, b: Pos) -> int:
@@ -119,111 +148,126 @@ def _exits(pos: Pos, ms) -> int:
 
 
 def _move_key(move: Move) -> int:
-    order = {
-        Move.UP: 0,
-        Move.LEFT: 1,
-        Move.RIGHT: 2,
-        Move.DOWN: 3,
-        Move.STAY: 4,
-    }
-    return order.get(move, 9)
-
-
-def _pos_key(pos: Pos) -> Tuple[int, int]:
-    return (pos[0], pos[1])
-
-
-def _normalize(weights: Dict[Pos, float], limit: int = BELIEF_PARTICLES) -> List[Tuple[Pos, float]]:
-    cleaned = [(pos, max(0.0, float(weight))) for pos, weight in weights.items() if weight > 0]
-    if not cleaned:
-        return []
-    cleaned.sort(key=lambda item: (-item[1], item[0][0], item[0][1]))
-    cleaned = cleaned[:limit]
-    total = sum(weight for _, weight in cleaned)
-    if total <= 0:
-        equal = 1.0 / len(cleaned)
-        return [(pos, equal) for pos, _ in cleaned]
-    return [(pos, weight / total) for pos, weight in cleaned]
-
-
-def _visible_cross_cells(pos: Pos, ms, radius: int = VISION_RADIUS) -> Set[Pos]:
-    visible: Set[Pos] = {pos}
-    h, w = _shape(ms)
-    for move in MOVE_ORDER:
-        dr, dc = move.value
-        for dist in range(1, radius + 1):
-            nr, nc = pos[0] + dr * dist, pos[1] + dc * dist
-            if not (0 <= nr < h and 0 <= nc < w):
-                break
-            if _cell(ms, nr, nc) == 1:
-                break
-            visible.add((nr, nc))
-    return visible
-
-
-def _in_cross_los(observer: Pos, target: Pos, ms, radius: int = VISION_RADIUS) -> bool:
-    if observer == target:
-        return True
-    same_row = observer[0] == target[0]
-    same_col = observer[1] == target[1]
-    if not same_row and not same_col:
-        return False
-    dist = _manhattan(observer, target)
-    if dist > radius:
-        return False
-    dr = 0 if same_row else (1 if target[0] > observer[0] else -1)
-    dc = 0 if same_col else (1 if target[1] > observer[1] else -1)
-    cur = observer
-    for _ in range(dist):
-        cur = (cur[0] + dr, cur[1] + dc)
-        if _cell(ms, cur[0], cur[1]) == 1:
-            return False
-    return True
+    return {Move.UP: 0, Move.LEFT: 1, Move.RIGHT: 2, Move.DOWN: 3,
+            Move.STAY: 4}.get(move, 9)
 
 
 def _pacman_reach(pac: Pos, ms, speed: int = 2) -> List[Pos]:
+    """All positions Pacman can reach in one turn (speed steps in straight line)."""
     reach: Set[Pos] = {pac}
-    for move in MOVE_ORDER:
+    for m in MOVE_ORDER:
         cur = pac
         for _ in range(max(1, speed)):
-            nxt = _apply(cur, move)
+            nxt = _apply(cur, m)
             if not _valid(nxt, ms):
                 break
             reach.add(nxt)
             cur = nxt
-    return sorted(reach, key=_pos_key)
+    return sorted(reach)
+
+
+def _bucket(v: int) -> int:
+    if v <= -6:   return -4
+    if v <= -3:   return -3
+    if v < 0:     return -1
+    if v == 0:    return 0
+    if v < 3:     return 1
+    if v < 6:     return 3
+    return 4
 
 
 # ===================================================================
-# BFS distance map (with LRU cache invalidation per memory state)
+# A* Pathfinding
 # ===================================================================
+def astar(ms, start: Pos, goal: Pos) -> List[Move]:
+    """A* on memory_map. Treats -1 (unseen) as traversable (optimistic)."""
+    if goal is None or not _valid(start, ms) or not _valid(goal, ms):
+        return []
+    if start == goal:
+        return []
 
-class BFSCache:
-    """BFS distance-map cache keyed by (start, map-hash)."""
+    open_set = [(0, 0, start)]
+    came_from: Dict[Pos, Tuple[Pos, Move]] = {}
+    g_score: Dict[Pos, int] = {start: 0}
+    closed: Set[Pos] = set()
 
-    def __init__(self, maxsize: int = 128) -> None:
-        self._cache: Dict[Tuple, Dict[Pos, int]] = {}
+    while open_set:
+        f, g, current = heapq.heappop(open_set)
+        if current in closed:
+            continue
+        closed.add(current)
+
+        if current == goal:
+            path: List[Move] = []
+            while current != start:
+                prev, move = came_from[current]
+                path.append(move)
+                current = prev
+            path.reverse()
+            return path
+
+        for move in MOVE_ORDER:
+            nxt = _apply(current, move)
+            if not _valid(nxt, ms) or nxt in closed:
+                continue
+            ng = g + 1
+            if nxt not in g_score or ng < g_score[nxt]:
+                g_score[nxt] = ng
+                came_from[nxt] = (current, move)
+                heapq.heappush(open_set, (ng + _manhattan(nxt, goal), ng, nxt))
+    return []
+
+
+# ===================================================================
+# Proposal
+# ===================================================================
+class Proposal:
+    """Single action proposal from a policy."""
+    __slots__ = ("action", "value", "risk", "confidence", "source", "cost", "reason")
+
+    def __init__(self, action: Move, value: float, risk: float,
+                 confidence: str = "medium", source: str = "",
+                 cost: float = 0.0, reason: str = ""):
+        self.action = action
+        self.value = value
+        self.risk = risk
+        self.confidence = confidence
+        self.source = source
+        self.cost = cost
+        self.reason = reason
+
+    def score(self) -> float:
+        cv = CONF_MAP.get(self.confidence, 0.3)
+        return (self.value
+                - RISK_WEIGHT * self.risk
+                + CONFIDENCE_WEIGHT * cv
+                - COST_WEIGHT * self.cost)
+
+
+# ===================================================================
+# Distance Cache (BFS)
+# ===================================================================
+class DistanceCache:
+    def __init__(self, maxsize: int = 256) -> None:
+        self._cache: Dict[Pos, Dict[Pos, int]] = {}
         self._maxsize = maxsize
-        self._map_hash: int = 0
-
-    def invalidate(self) -> None:
-        self._cache.clear()
 
     def dist(self, ms, start: Pos) -> Dict[Pos, int]:
-        key = (start, self._map_hash)
-        if key in self._cache:
-            d = self._cache.pop(key)
-            self._cache[key] = d
-            return d
-        d = self._compute(ms, start)
-        self._cache[key] = d
-        if len(self._cache) > self._maxsize:
-            oldest = next(iter(self._cache))
-            del self._cache[oldest]
+        if start in self._cache:
+            return self._cache[start]
+        d = self._bfs(ms, start)
+        if len(self._cache) >= self._maxsize:
+            del self._cache[next(iter(self._cache))]
+        self._cache[start] = d
         return d
 
+    def precompute(self, ms, cells: Set[Pos]) -> None:
+        for c in cells:
+            if c not in self._cache and _valid(c, ms):
+                self._cache[c] = self._bfs(ms, c)
+
     @staticmethod
-    def _compute(ms, start: Pos) -> Dict[Pos, int]:
+    def _bfs(ms, start: Pos) -> Dict[Pos, int]:
         if not _valid(start, ms):
             return {}
         d: Dict[Pos, int] = {start: 0}
@@ -239,87 +283,50 @@ class BFSCache:
 
 
 # ===================================================================
-# A* pathfinding
+# Topology Analyzer (precomputed from hardcoded KNOWN_LAYOUT)
 # ===================================================================
-
-def astar(ms, start: Pos, goal: Pos) -> List[Move]:
-    if not _valid(start, ms) or not _valid(goal, ms) or start == goal:
-        return []
-    open_set: List[Tuple[int, int, Pos]] = []
-    heapq.heappush(open_set, (_manhattan(start, goal), 0, start))
-    came_from: Dict[Pos, Tuple[Pos, Move]] = {}
-    g: Dict[Pos, int] = {start: 0}
-    closed: Set[Pos] = set()
-    while open_set:
-        _, gc, cur = heapq.heappop(open_set)
-        if cur in closed:
-            continue
-        closed.add(cur)
-        if cur == goal:
-            path: List[Move] = []
-            while cur != start:
-                cur, move = came_from[cur]
-                path.append(move)
-            path.reverse()
-            return path
-        for move in MOVE_ORDER:
-            nxt = _apply(cur, move)
-            if not _valid(nxt, ms) or nxt in closed:
-                continue
-            ng = gc + 1
-            if nxt not in g or ng < g[nxt]:
-                g[nxt] = ng
-                came_from[nxt] = (cur, move)
-                heapq.heappush(open_set, (ng + _manhattan(nxt, goal), ng, nxt))
-    return []
-
-
-# ===================================================================
-# Topology analysis
-# ===================================================================
-
-class Topology:
-    """Precompute structural features from the known portion of the map."""
-
+class TopologyAnalyzer:
     def __init__(self) -> None:
-        self.dead_ends:  Set[Pos] = set()
-        self.junctions:  Set[Pos] = set()
-        self.corridors:  Set[Pos] = set()
-        self.core:       Set[Pos] = set()
-        self.loop_set:   Set[Pos] = set()
-        self.danger_depth: Dict[Pos, int] = {}
-        self._open: Set[Pos] = set()
+        self.dead_ends:       Set[Pos] = set()
+        self.junctions:       Set[Pos] = set()
+        self.corridors:       Set[Pos] = set()
+        self.core:            Set[Pos] = set()
+        self.loop_set:        Set[Pos] = set()
+        self.trap_depth:      Dict[Pos, int] = {}
+        self.escape_capacity: Dict[Pos, int] = {}
+        self.chokepoints:     Set[Pos] = set()
+        self.tunnels:         List[Tuple[frozenset, Pos, Pos]] = []
+        self.tunnel_cells:    Set[Pos] = set()
+        self._open:           Set[Pos] = set()
+        self._built = False
 
     def build(self, ms) -> None:
+        if self._built:
+            return
         h, w = _shape(ms)
-        # Walls are globally visible in the arena; unknown non-wall cells are
-        # usable for deterministic topology planning even before direct visit.
         self._open = {(r, c) for r in range(h) for c in range(w) if _cell(ms, r, c) != 1}
-        self.dead_ends.clear()
-        self.junctions.clear()
-        self.corridors.clear()
         seeds: Set[Pos] = set()
         for p in self._open:
             deg = _exits(p, ms)
-            if deg <= 1:
-                seeds.add(p)
-            elif deg >= 3:
-                self.junctions.add(p)
-            else:
-                self.corridors.add(p)
+            if deg <= 1:    seeds.add(p)
+            elif deg >= 3:  self.junctions.add(p)
+            else:           self.corridors.add(p)
         self._propagate_dead_ends(ms, seeds)
+        self.corridors -= self.dead_ends
         self._compute_core(ms)
         self._find_loops(ms)
+        self._find_chokepoints()
+        self._find_tunnels(ms)
+        self._compute_escape_capacity(ms)
+        self._built = True
 
     def _propagate_dead_ends(self, ms, seeds: Set[Pos]) -> None:
-        self.danger_depth = {p: 0 for p in self._open}
+        self.trap_depth = {p: 0 for p in self._open}
         trimmed: Set[Pos] = set()
         degree = {p: _exits(p, ms) for p in self._open}
         q: deque[Pos] = deque(seeds)
         for p in seeds:
-            trimmed.add(p)
-            self.dead_ends.add(p)
-            self.danger_depth[p] = 1
+            trimmed.add(p); self.dead_ends.add(p); self.trap_depth[p] = 1
         while q:
             u = q.popleft()
             for m in MOVE_ORDER:
@@ -328,9 +335,8 @@ class Topology:
                     continue
                 degree[v] -= 1
                 if degree[v] <= 1:
-                    trimmed.add(v)
-                    self.dead_ends.add(v)
-                    self.danger_depth[v] = self.danger_depth[u] + 1
+                    trimmed.add(v); self.dead_ends.add(v)
+                    self.trap_depth[v] = self.trap_depth[u] + 1
                     q.append(v)
 
     def _compute_core(self, ms) -> None:
@@ -338,13 +344,10 @@ class Topology:
         changed = True
         while changed:
             changed = False
-            to_rm: Set[Pos] = set()
-            for p in active:
-                if sum(1 for m in MOVE_ORDER if _apply(p, m) in active) <= 1:
-                    to_rm.add(p)
-            if to_rm:
-                active -= to_rm
-                changed = True
+            rm = {p for p in active
+                  if sum(1 for m in MOVE_ORDER if _apply(p, m) in active) <= 1}
+            if rm:
+                active -= rm; changed = True
         self.core = active
 
     def _find_loops(self, ms) -> None:
@@ -356,449 +359,761 @@ class Topology:
         for start in list(self.core):
             if start in vis:
                 continue
-            stack = [(start, None, iter([n for m in MOVE_ORDER if (n := _apply(start, m)) in self.core]))]
-            vis.add(start)
-            parent[start] = None
+            nbs = [n for m in MOVE_ORDER if (n := _apply(start, m)) in self.core]
+            stack = [(start, None, iter(nbs))]
+            vis.add(start); parent[start] = None
             while stack:
                 u, p, it = stack[-1]
                 try:
                     v = next(it)
                 except StopIteration:
-                    stack.pop()
-                    continue
+                    stack.pop(); continue
                 if v not in vis:
-                    vis.add(v)
-                    parent[v] = u
-                    stack.append((v, u, iter([n for m in MOVE_ORDER if (n := _apply(v, m)) in self.core])))
+                    vis.add(v); parent[v] = u
+                    v_nbs = [n for m in MOVE_ORDER if (n := _apply(v, m)) in self.core]
+                    stack.append((v, u, iter(v_nbs)))
                 elif v != p:
-                    cycle: List[Pos] = [v]
+                    cyc: List[Pos] = [v]
                     cur = u
                     while cur is not None and cur != v:
-                        cycle.append(cur)
-                        cur = parent.get(cur)
-                    if cur == v and len(cycle) >= 4:
-                        cycles.append(cycle)
+                        cyc.append(cur); cur = parent.get(cur)
+                    if cur == v and len(cyc) >= 4:
+                        cycles.append(cyc)
         self.loop_set = set(max(cycles, key=len)) if cycles else set()
 
+    def _find_chokepoints(self) -> None:
+        if not self._open:
+            return
+        disc: Dict[Pos, int] = {}; low: Dict[Pos, int] = {}
+        parent: Dict[Pos, Optional[Pos]] = {}
+        cc: Dict[Pos, int] = defaultdict(int)
+        ap: Set[Pos] = set(); timer = [0]
+        for sn in self._open:
+            if sn in disc:
+                continue
+            parent[sn] = None; disc[sn] = low[sn] = timer[0]; timer[0] += 1
+            nbrs = [_apply(sn, m) for m in MOVE_ORDER if _apply(sn, m) in self._open]
+            stack = [(sn, iter(nbrs))]
+            while stack:
+                u, it = stack[-1]
+                try:
+                    v = next(it)
+                except StopIteration:
+                    stack.pop()
+                    if stack:
+                        p = stack[-1][0]
+                        low[p] = min(low[p], low[u])
+                        if parent[p] is None and cc[p] > 1: ap.add(p)
+                        if parent[p] is not None and low[u] >= disc[p]: ap.add(p)
+                    continue
+                if v not in disc:
+                    cc[u] += 1; parent[v] = u
+                    disc[v] = low[v] = timer[0]; timer[0] += 1
+                    v_nbrs = [_apply(v, m) for m in MOVE_ORDER if _apply(v, m) in self._open]
+                    stack.append((v, iter(v_nbrs)))
+                elif v != parent.get(u):
+                    low[u] = min(low[u], disc[v])
+        self.chokepoints = ap
+
+    def _find_tunnels(self, ms) -> None:
+        visited: Set[Pos] = set()
+        for junc in self.junctions:
+            for m in MOVE_ORDER:
+                nxt = _apply(junc, m)
+                if nxt not in self.corridors or nxt in visited:
+                    continue
+                path = [nxt]; visited.add(nxt)
+                cur, prev = nxt, junc
+                while True:
+                    reached = found = False
+                    for m2 in MOVE_ORDER:
+                        cand = _apply(cur, m2)
+                        if cand == prev:
+                            continue
+                        if cand in self.junctions:
+                            self.tunnels.append((frozenset(path), junc, cand))
+                            self.tunnel_cells |= set(path)
+                            reached = True; break
+                        if cand in self.corridors and cand not in visited:
+                            visited.add(cand); path.append(cand)
+                            prev, cur = cur, cand
+                            found = True; break
+                    if reached or not found:
+                        break
+
+    def _compute_escape_capacity(self, ms) -> None:
+        for pos in self._open:
+            safe = sum(1 for m in MOVE_ORDER
+                       if _valid(_apply(pos, m), ms)
+                       and _apply(pos, m) not in self.dead_ends)
+            self.escape_capacity[pos] = safe
+
 
 # ===================================================================
-# USL* Online Learner (Pacman behaviour modelling)
+# Offline Table
 # ===================================================================
+class OfflineTable:
+    def __init__(self) -> None:
+        self._table: Dict[Tuple[Pos, Tuple[int, int]], Move] = {}
+        self._built = False
 
-def _bucket(v: int) -> int:
-    if v <= -6: return -4
-    if v <= -3: return -3
-    if v <   0: return -1
-    if v ==  0: return  0
-    if v <   3: return  1
-    if v <   6: return  3
-    return 4
+    def build(self, ms, topo: TopologyAnalyzer) -> None:
+        if self._built:
+            return
+        key_cells = topo.core | topo.junctions | topo.loop_set
+        for pos in key_cells:
+            legal = _legal(pos, ms)
+            if not legal:
+                continue
+            for qr in (-1, 0, 1):
+                for qc in (-1, 0, 1):
+                    if qr == 0 and qc == 0:
+                        continue
+                    best_m: Optional[Move] = None
+                    best_s = float("-inf")
+                    for m in legal:
+                        nxt = _apply(pos, m)
+                        sc = -(nxt[0] - pos[0]) * qr * 12.0 - (nxt[1] - pos[1]) * qc * 12.0
+                        if nxt in topo.core:       sc += 18.0
+                        if nxt in topo.loop_set:   sc += 14.0
+                        if nxt in topo.junctions:  sc += 10.0
+                        if nxt in topo.dead_ends:
+                            sc -= 60.0 + topo.trap_depth.get(nxt, 1) * 6.0
+                        sc += _exits(nxt, ms) * 3.5
+                        if nxt in topo.tunnel_cells: sc -= 15.0
+                        if sc > best_s:
+                            best_s = sc; best_m = m
+                    if best_m is not None:
+                        self._table[(pos, (qr, qc))] = best_m
+        self._built = True
+
+    def lookup(self, ghost: Pos, pac: Pos) -> Optional[Move]:
+        dr = pac[0] - ghost[0]; dc = pac[1] - ghost[1]
+        qr = (1 if dr > 0 else (-1 if dr < 0 else 0))
+        qc = (1 if dc > 0 else (-1 if dc < 0 else 0))
+        return self._table.get((ghost, (qr, qc)))
 
 
-class USLStar:
-    """Lightweight online learner: tracks Pacman action counts per abstract state."""
+# ===================================================================
+# Pacman Tracker (Belief State)
+# ===================================================================
+class PacmanTracker:
+    """Maintains probability distribution over Pacman's position."""
 
     def __init__(self) -> None:
-        self._counts: Dict[Tuple, Counter] = defaultdict(Counter)
-        self._global: Counter = Counter()
+        self.belief: Dict[Pos, float] = {}
+        self.last_seen: Optional[Pos] = None
+        self.history: deque[Pos] = deque(maxlen=50)
+        self.steps_invisible: int = 0
+        # Initialize belief at known Pacman start position
+        self.belief = {PACMAN_START: 1.0}
+        self.last_seen = PACMAN_START
 
-    def abstract_state(self, ghost: Pos, pac: Pos, ms) -> Tuple:
-        dr = _bucket(ghost[0] - pac[0])
-        dc = _bucket(ghost[1] - pac[1])
-        dist_b = min(9, _manhattan(ghost, pac) // 2)
-        pac_moves = _legal(pac, ms)
-        deg = len(pac_moves)
-        if deg <= 1:
-            geo = 0
-        elif deg >= 3:
-            geo = 3
-        else:
-            m1, m2 = pac_moves[0], pac_moves[1]
-            opposite = (m1.value[0] + m2.value[0] == 0 and m1.value[1] + m2.value[1] == 0)
-            geo = 1 if opposite else 2
-        return (dr, dc, dist_b, geo)
+    def update(self, enemy_pos, ms, speed: int = 2) -> Dict[Pos, float]:
+        if enemy_pos is not None:
+            pac = (int(enemy_pos[0]), int(enemy_pos[1]))
+            self.belief = {pac: 1.0}
+            self.last_seen = pac
+            self.history.append(pac)
+            self.steps_invisible = 0
+            return self.belief
 
-    def observe(self, state: Tuple, action: Tuple[int, int], ms: np.ndarray, from_pos: Pos) -> None:
-        to_pos = (from_pos[0] + action[0], from_pos[1] + action[1])
-        if _valid(to_pos, ms):
-            self._counts[state][action] += 1
-            self._global[action] += 1
+        self.steps_invisible += 1
+        if not self.belief:
+            return self.belief
 
-    def predict_next_positions(self, ghost: Pos, pac: Pos, ms, limit: int = USL_LIMIT) -> List[Tuple[Pos, float]]:
-        state = self.abstract_state(ghost, pac, ms)
-        candidates: Dict[Pos, float] = {}
+        new_b: Dict[Pos, float] = {}
+        for cell, prob in self.belief.items():
+            reachable = _pacman_reach(cell, ms, speed)
+            n = len(reachable)
+            if n == 0:
+                continue
+            share = prob / n
+            for nxt in reachable:
+                new_b[nxt] = new_b.get(nxt, 0.0) + share
 
-        counts = self._counts.get(state)
-        if counts:
-            total = sum(counts.values())
-            ranked_actions = sorted(
-                counts.items(),
-                key=lambda item: (-item[1], item[0][0], item[0][1]),
-            )
-            for action, cnt in ranked_actions[:limit]:
-                pred = (pac[0] + action[0], pac[1] + action[1])
-                if _valid(pred, ms):
-                    w = 1.5 + 3.5 * (cnt / total) + min(1.2, total / 8.0)
-                    candidates[pred] = max(candidates.get(pred, 0.0), w)
+        total = sum(new_b.values())
+        if total > 0:
+            for k in new_b:
+                new_b[k] /= total
 
-        # Greedy fallback — assume Pacman moves toward ghost
-        for m in MOVE_ORDER:
-            cur = pac
-            for step_len in (1, 2):
-                cand = _apply(cur, m)
-                if not _valid(cand, ms):
-                    break
-                w = 1.4 if _manhattan(cand, ghost) < _manhattan(pac, ghost) else 0.55
-                if step_len == 2:
-                    w += 0.35
-                candidates[cand] = max(candidates.get(cand, 0.0), w)
-                cur = cand
+        if len(new_b) > BELIEF_MAX_CELLS:
+            ranked = sorted(new_b.items(), key=lambda x: -x[1])[:BELIEF_MAX_CELLS]
+            total2 = sum(v for _, v in ranked)
+            new_b = {k: v / total2 for k, v in ranked} if total2 > 0 else {}
 
-        # Stay
-        if pac not in candidates:
-            candidates[pac] = 0.4
-
-        ranked = sorted(candidates.items(), key=lambda x: (-x[1], x[0][0], x[0][1]))[:limit]
-        return ranked  # List[(pos, weight)]
-
-
-# ===================================================================
-# Belief State (deterministic information set over Pacman positions)
-# ===================================================================
-
-class BeliefState:
-    """Deterministic weighted information set over plausible Pacman positions."""
-
-    def __init__(self, limit: int = BELIEF_PARTICLES) -> None:
-        self._limit = limit
-        self._belief: Dict[Pos, float] = {}
-        self._initialized = False
+        self.belief = new_b
+        return self.belief
 
     @property
-    def initialized(self) -> bool:
-        return self._initialized
+    def best_estimate(self) -> Optional[Pos]:
+        if not self.belief:
+            return self.last_seen
+        return max(self.belief, key=lambda k: self.belief[k])
 
-    def initialize(self, pac: Pos, ms) -> None:
-        if _valid(pac, ms):
-            self._belief = {pac: 1.0}
-            self._initialized = True
 
-    def initialize_unknown(self, ghost: Pos, ms) -> None:
-        """Prior for deterministic starts, with a generic bottom-map fallback."""
-        priors: Dict[Pos, float] = {}
+# ===================================================================
+# Opponent Models
+# ===================================================================
+class _BaseModel:
+    name: str = "base"
+    def predict(self, pac: Pos, ghost: Pos, ms, topo, dc, **kw) -> Dict[Action, float]:
+        return {}
+    def update(self, state, action):
+        pass
 
-        if _valid(DEFAULT_PACMAN_START, ms):
-            priors[DEFAULT_PACMAN_START] = 8.0
-            for pos in _pacman_reach(DEFAULT_PACMAN_START, ms, 2):
-                priors[pos] = max(priors.get(pos, 0.0), 2.5)
 
-        h, w = _shape(ms)
-        center_col = w // 2
-        for r in range(max(0, int(h * 0.58)), h):
-            for c in range(1, w - 1):
-                pos = (r, c)
-                if not _valid(pos, ms):
-                    continue
-                distance_bias = max(0, 8 - abs(c - center_col))
-                priors[pos] = max(priors.get(pos, 0.0), 0.25 + distance_bias * 0.08)
+class MarkovOrder1(_BaseModel):
+    name = "markov1"
 
-        visible = _visible_cross_cells(ghost, ms)
-        for pos in list(priors):
-            if pos in visible:
-                priors[pos] *= 0.05
+    def __init__(self) -> None:
+        self._trans: Dict[Tuple, Counter] = defaultdict(Counter)
+        self._glob: Counter = Counter()
 
-        ranked = _normalize(priors, self._limit)
-        self._belief = dict(ranked)
-        self._initialized = bool(self._belief)
-
-    def update_visible(self, pac: Pos) -> None:
-        """When Pacman is visible, collapse belief to the exact position."""
-        self._belief = {pac: 1.0}
-        self._initialized = True
-
-    def predict(
-        self,
-        usl: USLStar,
-        ghost: Pos,
-        ms,
-        pac_speed: int = 2,
-        forbidden_visible: Optional[Set[Pos]] = None,
-    ) -> None:
-        """Propagate belief deterministically through the Pacman action set."""
-        if not self._initialized:
-            self.initialize_unknown(ghost, ms)
-        if not self._belief:
-            return
-
-        next_weights: Dict[Pos, float] = {}
-        forbidden_visible = forbidden_visible or set()
-
-        for pac, base_weight in self.top_hypotheses(self._limit):
-            preds: Dict[Pos, float] = {pac: 0.35}
-
-            for pos, learned_weight in usl.predict_next_positions(ghost, pac, ms, limit=USL_LIMIT):
-                preds[pos] = max(preds.get(pos, 0.0), learned_weight)
-
-            for move in MOVE_ORDER:
-                cur = pac
-                for step_len in range(1, max(1, pac_speed) + 1):
-                    nxt = _apply(cur, move)
-                    if not _valid(nxt, ms):
-                        break
-                    chase_gain = _manhattan(pac, ghost) - _manhattan(nxt, ghost)
-                    weight = 0.85 + step_len * 0.25 + max(0, chase_gain) * 0.55
-                    preds[nxt] = max(preds.get(nxt, 0.0), weight)
-                    cur = nxt
-
-            for pos, trans_weight in preds.items():
-                if pos in forbidden_visible:
-                    continue
-                if not _valid(pos, ms):
-                    continue
-                los_bonus = 1.15 if _in_cross_los(pos, ghost, ms, VISION_RADIUS) else 0.9
-                next_weights[pos] = next_weights.get(pos, 0.0) + base_weight * trans_weight * los_bonus
-
-        ranked = _normalize(next_weights, self._limit)
-        if ranked:
-            self._belief = dict(ranked)
+    def _state(self, ghost: Pos, pac: Pos, ms) -> Tuple:
+        dr = _bucket(ghost[0] - pac[0]); dc = _bucket(ghost[1] - pac[1])
+        db = min(9, _manhattan(ghost, pac) // 2)
+        mvs = _legal(pac, ms); deg = len(mvs)
+        if deg <= 1:    geo = 0
+        elif deg >= 3:  geo = 3
         else:
-            self.initialize_unknown(ghost, ms)
+            m1, m2 = mvs[0], mvs[1]
+            geo = 1 if (m1.value[0] + m2.value[0] == 0 and m1.value[1] + m2.value[1] == 0) else 2
+        return (dr, dc, db, geo)
 
-    def top_hypotheses(self, k: int = 5) -> List[Tuple[Pos, float]]:
-        if not self._belief:
-            return []
-        return sorted(
-            self._belief.items(),
-            key=lambda item: (-item[1], item[0][0], item[0][1]),
-        )[:k]
+    def observe(self, ghost: Pos, pac_prev: Pos, pac_cur: Pos, ms) -> None:
+        state = self._state(ghost, pac_prev, ms)
+        action = (pac_cur[0] - pac_prev[0], pac_cur[1] - pac_prev[1])
+        self._trans[state][action] += 1
+        self._glob[action] += 1
 
-    def weighted_centroid(self) -> Optional[Pos]:
-        hyps = self.top_hypotheses(10)
-        if not hyps:
-            return None
-        wr = sum(pos[0] * weight for pos, weight in hyps)
-        wc = sum(pos[1] * weight for pos, weight in hyps)
-        return (int(round(wr)), int(round(wc)))
+    def predict(self, pac, ghost, ms, topo=None, dc=None, **kw):
+        state = self._state(ghost, pac, ms)
+        counts = self._trans.get(state, self._glob)
+        if not counts:
+            legal = _legal(pac, ms)
+            n = max(1, len(legal))
+            return {(m.value[0], m.value[1]): 1.0 / n for m in legal}
+        total = sum(counts.values())
+        return {a: c / total for a, c in counts.items()}
+
+
+class MarkovOrder2(_BaseModel):
+    name = "markov2"
+
+    def __init__(self) -> None:
+        self._trans: Dict[Tuple, Counter] = defaultdict(Counter)
+
+    def observe(self, ghost: Pos, pac_prev2: Pos, pac_prev: Pos, pac_cur: Pos, ms) -> None:
+        prev_act = (pac_prev[0] - pac_prev2[0], pac_prev[1] - pac_prev2[1])
+        dr = _bucket(ghost[0] - pac_prev[0]); dc = _bucket(ghost[1] - pac_prev[1])
+        state = (prev_act, dr, dc)
+        action = (pac_cur[0] - pac_prev[0], pac_cur[1] - pac_prev[1])
+        self._trans[state][action] += 1
+
+    def predict(self, pac, ghost, ms, topo=None, dc=None, **kw):
+        prev_act = kw.get("prev_action", (0, 0))
+        dr = _bucket(ghost[0] - pac[0]); dc_ = _bucket(ghost[1] - pac[1])
+        state = (prev_act, dr, dc_)
+        counts = self._trans.get(state)
+        if not counts or sum(counts.values()) < 3:
+            return {}
+        total = sum(counts.values())
+        return {a: c / total for a, c in counts.items()}
+
+
+class ShortestPathModel(_BaseModel):
+    name = "shortest_path"
+
+    def predict(self, pac, ghost, ms, topo=None, dc=None, **kw):
+        if dc is None:
+            return {}
+        gd = dc.dist(ms, ghost)
+        legal = _legal(pac, ms)
+        if not legal:
+            return {}
+        probs: Dict[Action, float] = {}
+        total = 0.0
+        for m in legal:
+            nxt = _apply(pac, m)
+            d = gd.get(nxt, _manhattan(nxt, ghost))
+            w = max(0.01, 1.0 / max(1, d))
+            act = (m.value[0], m.value[1])
+            probs[act] = w
+            total += w
+        if total > 0:
+            for k in probs:
+                probs[k] /= total
+        return probs
+
+
+class InterceptionModel(_BaseModel):
+    name = "interceptor"
+
+    def predict(self, pac, ghost, ms, topo=None, dc=None, **kw):
+        if dc is None or topo is None:
+            return {}
+        gd = dc.dist(ms, ghost)
+        legal = _legal(pac, ms)
+        if not legal:
+            return {}
+        probs: Dict[Action, float] = {}
+        total = 0.0
+        for m in legal:
+            nxt = _apply(pac, m)
+            act = (m.value[0], m.value[1])
+            d = gd.get(nxt, _manhattan(nxt, ghost))
+            score = max(0.01, 1.0 / max(1, d))
+            if nxt in topo.junctions:   score *= 2.0
+            if nxt in topo.chokepoints: score *= 2.5
+            probs[act] = score
+            total += score
+        if total > 0:
+            for k in probs:
+                probs[k] /= total
+        return probs
+
+
+class RandomLegalModel(_BaseModel):
+    name = "random"
+
+    def predict(self, pac, ghost, ms, topo=None, dc=None, **kw):
+        legal = _legal(pac, ms)
+        n = max(1, len(legal))
+        return {(m.value[0], m.value[1]): 1.0 / n for m in legal}
+
+
+class AdversarialModel(_BaseModel):
+    """Minimax 1-ply: Pacman chooses move that minimises Ghost's best escape."""
+    name = "adversarial"
+
+    def predict(self, pac, ghost, ms, topo=None, dc=None, **kw):
+        pac_legal = _legal(pac, ms)
+        ghost_legal = _legal(ghost, ms)
+        if not pac_legal:
+            return {}
+        scores: Dict[Action, float] = {}
+        for pm in pac_legal:
+            pac_nxt = _apply(pac, pm)
+            best_ghost_d = 0.0
+            for gm in ghost_legal:
+                g_nxt = _apply(ghost, gm)
+                best_ghost_d = max(best_ghost_d, _manhattan(g_nxt, pac_nxt))
+            scores[(pm.value[0], pm.value[1])] = max(0.01, 1.0 / max(1, best_ghost_d))
+        total = sum(scores.values())
+        if total > 0:
+            for k in scores:
+                scores[k] /= total
+        return scores
 
 
 # ===================================================================
-# Monte Carlo Rollout Engine (POMCP-lite)
+# Opponent Model Ensemble
 # ===================================================================
+class OpponentModelEnsemble:
+    """Combines 6 opponent models with adaptive weight updates."""
 
-class MCRollout:
-    """Deterministic information-set Monte Carlo planning for Ghost evasion."""
+    def __init__(self) -> None:
+        self.markov1 = MarkovOrder1()
+        self.markov2 = MarkovOrder2()
+        self.sp = ShortestPathModel()
+        self.intercept = InterceptionModel()
+        self.rand = RandomLegalModel()
+        self.adv = AdversarialModel()
+        self._models = [self.markov1, self.markov2, self.sp,
+                        self.intercept, self.rand, self.adv]
+        self.weights: Dict[str, float] = {
+            "markov1": 1.0, "markov2": 1.0, "shortest_path": 1.0,
+            "interceptor": 1.0, "random": 0.5, "adversarial": 0.8,
+        }
+        self._last_predictions: Dict[str, Dict[Action, float]] = {}
+        self.style: str = "UNKNOWN"
 
-    def __init__(self, topo: Topology, bfs: BFSCache) -> None:
+    def update_if_observed(self, tracker: PacmanTracker, ghost: Pos, ms) -> None:
+        hist = tracker.history
+        if len(hist) < 2:
+            return
+        pac_cur = hist[-1]; pac_prev = hist[-2]
+        actual = (pac_cur[0] - pac_prev[0], pac_cur[1] - pac_prev[1])
+        prev_ghost = ghost
+        self.markov1.observe(prev_ghost, pac_prev, pac_cur, ms)
+        if len(hist) >= 3:
+            self.markov2.observe(prev_ghost, hist[-3], pac_prev, pac_cur, ms)
+        if self._last_predictions:
+            for mdl in self._models:
+                pred = self._last_predictions.get(mdl.name, {})
+                prob = pred.get(actual, 0.01)
+                error = -math.log(max(prob, 0.001))
+                self.weights[mdl.name] *= math.exp(-ENSEMBLE_LR * error)
+            self._normalize_weights()
+
+    def _normalize_weights(self) -> None:
+        total = sum(self.weights.values())
+        if total <= 0:
+            n = len(self.weights)
+            self.weights = {k: 1.0 / n for k in self.weights}
+            return
+        for k in self.weights:
+            self.weights[k] = max(MIN_MODEL_WEIGHT, self.weights[k] / total)
+        total2 = sum(self.weights.values())
+        for k in self.weights:
+            self.weights[k] /= total2
+
+    def predict(self, pac: Pos, ghost: Pos, ms, topo, dc,
+                prev_action: Action = (0, 0)) -> Dict[Action, float]:
+        combined: Dict[Action, float] = {}
+        self._last_predictions.clear()
+        for mdl in self._models:
+            dist = mdl.predict(pac, ghost, ms, topo=topo, dc=dc,
+                               prev_action=prev_action)
+            self._last_predictions[mdl.name] = dist
+            w = self.weights.get(mdl.name, 0.1)
+            for act, prob in dist.items():
+                combined[act] = combined.get(act, 0.0) + w * prob
+        total = sum(combined.values())
+        if total > 0:
+            for k in combined:
+                combined[k] /= total
+        return combined
+
+    def predict_positions_2step(self, ghost: Pos, pac: Pos, ms, topo, dc,
+                                 speed: int = 2,
+                                 prev_action: Action = (0, 0)
+                                 ) -> List[Tuple[Pos, float]]:
+        dist1 = self.predict(pac, ghost, ms, topo, dc, prev_action)
+        positions: Dict[Pos, float] = {}
+        step1: List[Tuple[Pos, float, Action]] = []
+        for act, prob in dist1.items():
+            if prob < 0.04:
+                continue
+            pos1 = (pac[0] + act[0], pac[1] + act[1])
+            if _valid(pos1, ms):
+                positions[pos1] = max(positions.get(pos1, 0.0), prob)
+                step1.append((pos1, prob, act))
+                cur = pos1
+                for _ in range(1, speed):
+                    ext = (cur[0] + act[0], cur[1] + act[1])
+                    if _valid(ext, ms):
+                        positions[ext] = max(positions.get(ext, 0.0), prob * 0.6)
+                        cur = ext
+                    else:
+                        break
+        for pos1, prob1, act1 in step1:
+            if prob1 < 0.07:
+                continue
+            d2 = self.predict(pos1, ghost, ms, topo, dc, act1)
+            for act2, prob2 in d2.items():
+                pos2 = (pos1[0] + act2[0], pos1[1] + act2[1])
+                if _valid(pos2, ms):
+                    c = prob1 * prob2 * 0.55
+                    if c >= 0.02:
+                        positions[pos2] = max(positions.get(pos2, 0.0), c)
+        for m in MOVE_ORDER:
+            nxt = _apply(pac, m)
+            if _valid(nxt, ms):
+                closer = _manhattan(nxt, ghost) < _manhattan(pac, ghost)
+                ch = 0.45 if closer else 0.15
+                positions[nxt] = max(positions.get(nxt, 0.0), ch)
+        positions[pac] = max(positions.get(pac, 0.0), 0.10)
+        ranked = sorted(positions.items(), key=lambda x: (-x[1], x[0]))
+        return ranked[:MARKOV_LIMIT]
+
+
+# ===================================================================
+# Risk Engine
+# ===================================================================
+class RiskEngine:
+    def __init__(self, topo: TopologyAnalyzer, dc: DistanceCache) -> None:
         self._topo = topo
-        self._bfs  = bfs
+        self._dc = dc
 
-    def _ghost_policy(self, ghost: Pos, pac: Pos, ms, prev: Optional[Pos], scenario: int) -> Tuple[Pos, Move]:
+    def time_expanded_danger(
+        self, pac_preds: List[Tuple[Pos, float]], ms, speed: int = 2,
+        horizon: int = DANGER_HORIZON,
+    ) -> List[Dict[Pos, float]]:
+        danger: List[Dict[Pos, float]] = [{} for _ in range(horizon + 1)]
+        current_dist = {p: w for p, w in pac_preds}
+        for t in range(horizon + 1):
+            for pac_pos, prob in current_dist.items():
+                danger[t][pac_pos] = danger[t].get(pac_pos, 0.0) + prob * 100.0
+                for m in MOVE_ORDER:
+                    cur = pac_pos
+                    for s in range(speed):
+                        nxt = _apply(cur, m)
+                        if not _valid(nxt, ms):
+                            break
+                        d_score = prob * (65.0 / (s + 1)) * (0.85 ** t)
+                        danger[t][nxt] = danger[t].get(nxt, 0.0) + d_score
+                        cur = nxt
+            new_dist: Dict[Pos, float] = {}
+            for cell, prob in current_dist.items():
+                reachable = _pacman_reach(cell, ms, speed)
+                n = max(1, len(reachable))
+                for r in reachable:
+                    new_dist[r] = new_dist.get(r, 0.0) + prob / n
+            if len(new_dist) > 30:
+                ranked = sorted(new_dist.items(), key=lambda x: -x[1])[:30]
+                total = sum(v for _, v in ranked)
+                new_dist = {k: v / total for k, v in ranked} if total > 0 else {}
+            current_dist = new_dist
+        for tc, ent1, ent2 in self._topo.tunnels:
+            ed = max(danger[0].get(ent1, 0.0), danger[0].get(ent2, 0.0))
+            if ed > 25.0:
+                for c in tc:
+                    danger[0][c] = danger[0].get(c, 0.0) + ed * 0.4
+        return danger
+
+    def survival_margin(self, ghost: Pos, belief: Dict[Pos, float],
+                         ms, speed: int = 2) -> float:
+        exits = list(self._topo.core | self._topo.loop_set | self._topo.junctions)
+        if not exits:
+            exits = [p for p in self._topo._open if _exits(p, ms) >= 3]
+        if not exits or not belief:
+            return 10.0
+        gd = self._dc.dist(ms, ghost)
+        best_margin = -INF
+        for ex in exits[:20]:
+            ghost_time = gd.get(ex, INF)
+            if ghost_time == INF:
+                continue
+            worst_pac = INF
+            for pac_cell, prob in belief.items():
+                if prob < 0.05:
+                    continue
+                pd = self._dc.dist(ms, pac_cell)
+                pac_time = math.ceil(pd.get(ex, INF) / max(1, speed))
+                worst_pac = min(worst_pac, pac_time)
+            margin = worst_pac - ghost_time
+            best_margin = max(best_margin, margin)
+        return best_margin
+
+    def is_viable(self, pos: Pos, belief: Dict[Pos, float], ms,
+                   speed: int = 2) -> bool:
+        ec = self._topo.escape_capacity.get(pos, 0)
+        if ec >= 3:
+            return True
+        if pos in self._topo.core or pos in self._topo.loop_set:
+            return True
+        if not belief:
+            return True
+        best_pac = min(belief, key=lambda p: _manhattan(p, pos))
+        margin = self.survival_margin(pos, belief, ms, speed)
+        if margin >= 1:
+            return True
+        if _manhattan(pos, best_pac) >= 5 and ec >= 2:
+            return True
+        return False
+
+
+# ===================================================================
+# Safety Shield (4-level)
+# ===================================================================
+class SafetyShield:
+    def __init__(self, topo: TopologyAnalyzer, dc: DistanceCache,
+                 risk: RiskEngine) -> None:
+        self._topo = topo
+        self._dc = dc
+        self._risk = risk
+
+    def filter(self, proposals: List[Proposal], ghost: Pos,
+               belief: Dict[Pos, float], danger_t0: Dict[Pos, float],
+               ms, speed: int = 2) -> List[Proposal]:
+        safe: List[Proposal] = []
+        for p in proposals:
+            nxt = _apply(ghost, p.action)
+            if not _valid(nxt, ms) or p.action not in _legal(ghost, ms):
+                continue
+            if self._can_capture_next(nxt, belief, ms, speed):
+                continue
+            if danger_t0.get(nxt, 0.0) >= FATAL_DANGER:
+                continue
+            if not self._risk.is_viable(nxt, belief, ms, speed):
+                continue
+            safe.append(p)
+        if safe:
+            return safe
+        return self._relaxed(proposals, ghost, belief, ms)
+
+    def _can_capture_next(self, nxt: Pos, belief: Dict[Pos, float],
+                           ms, speed: int) -> bool:
+        for pac_pos, prob in belief.items():
+            if prob < 0.15:
+                continue
+            reach = _pacman_reach(pac_pos, ms, speed)
+            for r in reach:
+                if _manhattan(nxt, r) < CAPTURE_DISTANCE:
+                    return True
+        return False
+
+    def _relaxed(self, proposals: List[Proposal], ghost: Pos,
+                  belief: Dict[Pos, float], ms) -> List[Proposal]:
+        if not proposals:
+            return []
+        def sort_key(p):
+            nxt = _apply(ghost, p.action)
+            if not _valid(nxt, ms):
+                return -INF
+            min_d = min((_manhattan(nxt, pc) for pc in belief), default=INF)
+            return min_d
+        return sorted(proposals, key=sort_key, reverse=True)
+
+
+# ===================================================================
+# Monte Carlo Rollout V3 (CVaR scoring)
+# ===================================================================
+class MCRolloutV3:
+    def __init__(self, topo: TopologyAnalyzer, dc: DistanceCache,
+                 ensemble: OpponentModelEnsemble) -> None:
+        self._topo = topo; self._dc = dc; self._ens = ensemble
+
+    def _ghost_policy(self, ghost, pac, ms, prev, scenario):
         moves = _legal(ghost, ms)
         if not moves:
             return ghost, Move.STAY
-        pd = self._bfs.dist(ms, pac)
-        scored: List[Tuple[float, int, Move, Pos]] = []
+        pd = self._dc.dist(ms, pac)
+        best_s = float("-inf"); best = (ghost, Move.STAY)
         for m in moves:
             nxt = _apply(ghost, m)
             d = pd.get(nxt, _manhattan(nxt, pac))
-            score = d * 3.2 + _exits(nxt, ms) * 2.0
-            if nxt in self._topo.core:
-                score += 9.0
-            if nxt in self._topo.loop_set:
-                score += 8.0
-            if nxt in self._topo.junctions:
-                score += 6.0
+            sc = d * 3.5 + _exits(nxt, ms) * 2.5
+            if nxt in self._topo.core:       sc += 10.0
+            if nxt in self._topo.loop_set:   sc += 9.0
+            if nxt in self._topo.junctions:  sc += 7.0
             if nxt in self._topo.dead_ends:
-                score -= 42.0 + self._topo.danger_depth.get(nxt, 1) * 4.0
-            if _in_cross_los(pac, nxt, ms, VISION_RADIUS):
-                score -= 7.0
-            else:
-                score += 5.0
-            if prev is not None and nxt == prev:
-                score -= 12.0
-            if _manhattan(nxt, pac) < CAPTURE_DISTANCE:
-                score -= MC_CAPTURE_PENALTY
+                sc -= 45.0 + self._topo.trap_depth.get(nxt, 1) * 5.0
+            if nxt in self._topo.tunnel_cells: sc -= 8.0
+            if prev is not None and nxt == prev: sc -= 12.0
+            if _manhattan(nxt, pac) < CAPTURE_DISTANCE: sc -= MC_CAPTURE_PENALTY
+            if scenario % 4 == 1 and nxt in self._topo.loop_set: sc += 7.0
+            elif scenario % 4 == 2 and nxt in self._topo.junctions: sc += 6.0
+            elif scenario % 4 == 3 and nxt in self._topo.core: sc += 5.0
+            if sc > best_s:
+                best_s = sc; best = (nxt, m)
+        return best
 
-            if scenario % 4 == 1 and nxt in self._topo.loop_set:
-                score += 6.0
-            elif scenario % 4 == 2 and nxt in self._topo.junctions:
-                score += 5.0
-            elif scenario % 4 == 3 and not _in_cross_los(pac, nxt, ms, VISION_RADIUS):
-                score += 7.0
+    def _pac_response(self, pac, ghost, ms, scenario, speed=2):
+        pred = self._ens.predict(pac, ghost, ms, self._topo, self._dc)
+        if pred:
+            ranked = sorted(pred.items(), key=lambda x: -x[1])
+            idx = min(scenario % 3, len(ranked) - 1)
+            act, _ = ranked[idx]
+            pos = (pac[0] + act[0], pac[1] + act[1])
+            if _valid(pos, ms):
+                cur = pos
+                for _ in range(1, speed):
+                    ext = (cur[0] + act[0], cur[1] + act[1])
+                    if _valid(ext, ms): cur = ext
+                    else: break
+                return cur
+        gd = self._dc.dist(ms, ghost)
+        reach = _pacman_reach(pac, ms, speed)
+        reach.sort(key=lambda p: gd.get(p, INF))
+        branch = min(scenario % 3, len(reach) - 1)
+        return reach[branch] if reach else pac
 
-            scored.append((score, -_move_key(m), m, nxt))
-
-        scored.sort(key=lambda item: (-item[0], -item[1], item[3][0], item[3][1]))
-        _, _, move, nxt = scored[0]
-        return nxt, move
-
-    def _pacman_responses(self, pac: Pos, ghost: Pos, ms, pac_speed: int = 2) -> List[Pos]:
-        gd = self._bfs.dist(ms, ghost)
-        scored: List[Tuple[float, Pos]] = []
-        for pos in _pacman_reach(pac, ms, pac_speed):
-            d = gd.get(pos, _manhattan(pos, ghost))
-            score = -d * 12.0
-            if _in_cross_los(pos, ghost, ms, VISION_RADIUS):
-                score += 5.0
-            if _manhattan(pos, ghost) < CAPTURE_DISTANCE:
-                score += 1000.0
-            score -= _manhattan(pos, pac) * 0.2
-            scored.append((score, pos))
-        scored.sort(key=lambda item: (-item[0], item[1][0], item[1][1]))
-        return [pos for _, pos in scored]
-
-    def _pacman_response(self, pac: Pos, ghost: Pos, ms, scenario: int, pac_speed: int = 2) -> Pos:
-        responses = self._pacman_responses(pac, ghost, ms, pac_speed)
-        if not responses:
-            return pac
-        branch_count = min(3, len(responses))
-        return responses[min(scenario % branch_count, branch_count - 1)]
-
-    def _leaf_score(self, ghost: Pos, pac: Pos, ms) -> float:
-        pd = self._bfs.dist(ms, pac)
+    def _leaf(self, ghost, pac, ms):
+        pd = self._dc.dist(ms, pac)
         d = pd.get(ghost, _manhattan(ghost, pac))
-        score = d * 14.0
-        score += _exits(ghost, ms) * 3.0
-        if ghost in self._topo.core:
-            score += 12.0
-        if ghost in self._topo.loop_set:
-            score += 10.0
-        if ghost in self._topo.junctions:
-            score += 7.0
-        if _in_cross_los(pac, ghost, ms, VISION_RADIUS):
-            score -= 10.0
-        else:
-            score += 5.0
+        sc = d * 14.0 + _exits(ghost, ms) * 3.5
+        if ghost in self._topo.core:       sc += 14.0
+        if ghost in self._topo.loop_set:   sc += 11.0
+        if ghost in self._topo.junctions:  sc += 8.0
         if ghost in self._topo.dead_ends:
-            score -= 36.0 + self._topo.danger_depth.get(ghost, 1) * 5.0
-        return score
+            sc -= 40.0 + self._topo.trap_depth.get(ghost, 1) * 6.0
+        if ghost in self._topo.tunnel_cells: sc -= 10.0
+        return sc
 
-    def rollout(
-        self,
-        ghost_start: Pos,
-        first_move: Move,
-        pac_start: Pos,
-        ms,
-        step_number: int,
-        scenario: int,
-        pac_speed: int = 2,
-        t0: float = 0.0,
-    ) -> float:
-        ghost = _apply(ghost_start, first_move)
+    def rollout(self, g0, first_move, pac0, ms, sn, scenario, speed=2, t0=0.0):
+        ghost = _apply(g0, first_move)
         if not _valid(ghost, ms):
             return -MC_CAPTURE_PENALTY
-
-        pac = self._pacman_response(pac_start, ghost, ms, scenario, pac_speed)
+        pac = self._pac_response(pac0, ghost, ms, scenario, speed)
         if _manhattan(ghost, pac) < CAPTURE_DISTANCE:
             return -MC_CAPTURE_PENALTY
-
-        total_score = 0.0
-        steps = 0
-        prev_ghost = ghost_start
-
-        for depth in range(MC_HORIZON):
-            if time.time() - t0 > TIME_BUDGET * 0.92:
+        total = 0.0; survived = 0; prev = g0
+        for depth in range(MC_DEPTH):
+            if time.time() - t0 > TIME_BUDGET * 0.80:
                 break
-            new_ghost, _ = self._ghost_policy(ghost, pac, ms, prev_ghost, scenario + depth)
-            new_pac = self._pacman_response(pac, new_ghost, ms, scenario + depth, pac_speed)
-            if _manhattan(new_ghost, new_pac) < CAPTURE_DISTANCE:
-                total_score -= MC_CAPTURE_PENALTY - depth * 8000.0
-                break
-            total_score += self._leaf_score(new_ghost, new_pac, ms) + depth * 180.0
-            steps += 1
-            prev_ghost = ghost
-            ghost = new_ghost
-            pac = new_pac
+            ng, _ = self._ghost_policy(ghost, pac, ms, prev, scenario + depth)
+            np_ = self._pac_response(pac, ng, ms, scenario + depth, speed)
+            if _manhattan(ng, np_) < CAPTURE_DISTANCE:
+                total -= MC_CAPTURE_PENALTY - depth * 6000.0; break
+            total += self._leaf(ng, np_, ms) + depth * 200.0
+            survived += 1; prev = ghost; ghost = ng; pac = np_
+        return total + survived * MC_SURVIVE_BONUS
 
-        return total_score + steps * MC_SURVIVE_BONUS
-
-    def evaluate_move(
-        self,
-        ghost: Pos,
-        move: Move,
-        pac_hypotheses: List[Tuple[Pos, float]],
-        ms,
-        step_number: int,
-        t0: float,
-        pac_speed: int = 2,
-    ) -> Optional[float]:
+    def evaluate_move_cvar(self, ghost, move, pac_preds, ms, sn, t0,
+                            speed=2) -> Optional[float]:
         nxt = _apply(ghost, move)
         if not _valid(nxt, ms):
             return None
-        total = 0.0
-        total_weight = 0.0
-        scenarios = min(MC_ROLLOUTS, 4 if len(pac_hypotheses) > 4 else 6)
-        hypotheses = pac_hypotheses[:6]
-        for hyp_index, (pac, hyp_weight) in enumerate(hypotheses):
-            if time.time() - t0 > TIME_BUDGET * 0.88:
+        returns: List[float] = []
+        hyps = pac_preds[:5]
+        rp = max(1, MC_ROLLOUTS // max(1, len(hyps)))
+        for hi, (pac, hw) in enumerate(hyps):
+            if time.time() - t0 > TIME_BUDGET * 0.75:
                 break
-            for scenario in range(scenarios):
-                if time.time() - t0 > TIME_BUDGET * 0.88:
+            for s in range(rp):
+                if time.time() - t0 > TIME_BUDGET * 0.75:
                     break
-                scenario_id = step_number * 13 + hyp_index * 5 + scenario
-                scenario_weight = hyp_weight / (1.0 + scenario * 0.35)
-                score = self.rollout(ghost, move, pac, ms, step_number, scenario_id, pac_speed, t0)
-                total += score * scenario_weight
-                total_weight += scenario_weight
-        return total / total_weight if total_weight > 0 else None
+                sid = sn * 13 + hi * 5 + s
+                sc = self.rollout(ghost, move, pac, ms, sn, sid, speed, t0)
+                returns.append(sc * hw)
+        if not returns:
+            return None
+        returns.sort()
+        k = max(1, int(len(returns) * CVAR_ALPHA))
+        cvar = sum(returns[:k]) / k
+        mean_r = sum(returns) / len(returns)
+        return MEAN_WEIGHT * mean_r + CVAR_WEIGHT * cvar
 
 
 # ===================================================================
-# Paranoid Alpha-Beta Search (visible Pacman, worst-case)
+# Alpha-Beta Search (TT + move ordering)
 # ===================================================================
+class AlphaBetaSearch:
+    def __init__(self, topo: TopologyAnalyzer, dc: DistanceCache,
+                 ensemble: OpponentModelEnsemble) -> None:
+        self._topo = topo; self._dc = dc; self._ens = ensemble
+        self._tt: Dict[Tuple, Tuple[float, int, str]] = {}
+        self._tt_max = 40_000
 
-class ParanoidSearch:
-    """Minimax with alpha-beta: Ghost maximises, Pacman minimises.
-    Works on memory_map. Used when Pacman is visible and close."""
-
-    def __init__(self, topo: Topology, bfs: BFSCache) -> None:
-        self._topo = topo
-        self._bfs  = bfs
-
-    def _evaluate(self, ghost: Pos, pac: Pos, ms) -> float:
-        if _manhattan(ghost, pac) < CAPTURE_DISTANCE:
+    def _eval(self, g, p, ms):
+        if _manhattan(g, p) < CAPTURE_DISTANCE:
             return -100_000.0
-        pd = self._bfs.dist(ms, pac)
-        d = pd.get(ghost, _manhattan(ghost, pac))
-        score = d * 15.0 + _exits(ghost, ms) * 4.0
-        if ghost in self._topo.core:       score += 18.0
-        if ghost in self._topo.loop_set:   score += 14.0
-        if ghost in self._topo.junctions:  score += 8.0
-        if ghost in self._topo.dead_ends:
-            score -= 50.0 + self._topo.danger_depth.get(ghost, 1) * 6.0
-        return score
+        pd = self._dc.dist(ms, p)
+        d = pd.get(g, _manhattan(g, p))
+        sc = d * 16.0 + _exits(g, ms) * 4.5
+        if g in self._topo.core:       sc += 20.0
+        if g in self._topo.loop_set:   sc += 15.0
+        if g in self._topo.junctions:  sc += 10.0
+        if g in self._topo.dead_ends:
+            sc -= 55.0 + self._topo.trap_depth.get(g, 1) * 7.0
+        if g in self._topo.tunnel_cells: sc -= 12.0
+        if g in self._topo.chokepoints: sc += 8.0
+        return sc
 
-    def _pac_reach(self, pac: Pos, ms, speed: int = 2) -> List[Pos]:
-        return _pacman_reach(pac, ms, speed)
-
-    def search(
-        self,
-        ghost: Pos,
-        pac: Pos,
-        ms,
-        max_depth: int,
-        t0: float,
-        pac_speed: int = 2,
-        history: Optional[List[Pos]] = None,
-    ) -> Tuple[float, Optional[Move]]:
+    def search(self, ghost, pac, ms, max_depth, t0, speed=2,
+               history=None) -> Tuple[float, Optional[Move]]:
         history = history or []
-        memo: Dict[Tuple, float] = {}
+        self._tt.clear()
 
-        def ab(g: Pos, p: Pos, depth: int, alpha: float, beta: float, is_ghost: bool) -> float:
-            if time.time() - t0 > TIME_BUDGET * 0.86:
-                return self._evaluate(g, p, ms)
+        def ab(g, p, depth, alpha, beta, is_ghost):
+            if time.time() - t0 > TIME_BUDGET * 0.70:
+                return self._eval(g, p, ms)
             if _manhattan(g, p) < CAPTURE_DISTANCE:
                 return -100_000.0 + depth * 2000.0
             if depth <= 0:
-                return self._evaluate(g, p, ms)
+                return self._eval(g, p, ms)
             key = (g, p, depth, is_ghost)
-            if key in memo:
-                return memo[key]
-
+            hit = self._tt.get(key)
+            if hit is not None and hit[1] >= depth:
+                return hit[0]
             if is_ghost:
                 best = float("-inf")
                 moves = _legal(g, ms)
-                moves.sort(key=lambda m: (-self._bfs.dist(ms, p).get(_apply(g, m), INF), _move_key(m)))
+                pd = self._dc.dist(ms, p)
+                moves.sort(key=lambda m: (-pd.get(_apply(g, m), INF), _move_key(m)))
                 tried = False
                 for m in moves:
                     ng = _apply(g, m)
@@ -806,48 +1121,39 @@ class ParanoidSearch:
                         continue
                     tried = True
                     v = ab(ng, p, depth - 1, alpha, beta, False)
-                    if v > best:
-                        best = v
-                    alpha = max(alpha, best)
-                    if beta <= alpha:
-                        break
+                    best = max(best, v); alpha = max(alpha, best)
+                    if beta <= alpha: break
                 if not tried:
                     for m in moves:
-                        ng = _apply(g, m)
-                        v = ab(ng, p, depth - 1, alpha, beta, False)
-                        if v > best:
-                            best = v
-                        alpha = max(alpha, best)
-                        if beta <= alpha:
-                            break
-                memo[key] = best
-                return best
+                        v = ab(_apply(g, m), p, depth - 1, alpha, beta, False)
+                        best = max(best, v); alpha = max(alpha, best)
+                        if beta <= alpha: break
             else:
                 best = float("inf")
-                pac_options = self._pac_reach(p, ms, pac_speed)
-                pac_options.sort(
-                    key=lambda pos: (
-                        self._bfs.dist(ms, g).get(pos, _manhattan(pos, g)),
-                        pos[0],
-                        pos[1],
-                    )
-                )
-                for np_ in pac_options:
+                pred = self._ens.predict(p, g, ms, self._topo, self._dc)
+                pac_opts: List[Pos] = []
+                for act, _ in sorted(pred.items(), key=lambda x: -x[1])[:3]:
+                    pos = (p[0] + act[0], p[1] + act[1])
+                    if _valid(pos, ms):
+                        pac_opts.append(pos)
+                for pos in _pacman_reach(p, ms, speed):
+                    if pos not in pac_opts:
+                        pac_opts.append(pos)
+                gd = self._dc.dist(ms, g)
+                pac_opts.sort(key=lambda pos: (gd.get(pos, INF), pos))
+                for np_ in pac_opts[:5]:
                     v = ab(g, np_, depth - 1, alpha, beta, True)
-                    if v < best:
-                        best = v
-                    beta = min(beta, best)
-                    if beta <= alpha:
-                        break
-                memo[key] = best
-                return best
+                    best = min(best, v); beta = min(beta, best)
+                    if beta <= alpha: break
+            if len(self._tt) < self._tt_max:
+                self._tt[key] = (best, depth, "exact")
+            return best
 
-        best_move: Optional[Move] = None
-        best_score = float("-inf")
+        best_move = None; best_score = float("-inf")
         moves = _legal(ghost, ms)
         if not moves:
             return float("-inf"), None
-        pd = self._bfs.dist(ms, pac)
+        pd = self._dc.dist(ms, pac)
         moves.sort(key=lambda m: (-pd.get(_apply(ghost, m), INF), _move_key(m)))
         for m in moves:
             ng = _apply(ghost, m)
@@ -855,491 +1161,610 @@ class ParanoidSearch:
                 continue
             v = ab(ng, pac, max_depth - 1, float("-inf"), float("inf"), False)
             if v > best_score:
-                best_score = v
-                best_move = m
+                best_score = v; best_move = m
         return best_score, best_move
 
 
 # ===================================================================
-# Main Ghost Agent
+# Anti-Loop
 # ===================================================================
+class AntiLoop:
+    def __init__(self) -> None:
+        self.visit_count: Dict[Pos, int] = defaultdict(int)
+        self.edge_count: Dict[Tuple[Pos, Pos], int] = defaultdict(int)
+        self.recent: deque[Pos] = deque(maxlen=12)
 
+    def record(self, pos: Pos) -> None:
+        self.visit_count[pos] += 1
+        if self.recent:
+            self.edge_count[(self.recent[-1], pos)] += 1
+        self.recent.append(pos)
+
+    def penalty(self, nxt: Pos, cur: Pos, pac_near: bool,
+                topo: TopologyAnalyzer) -> float:
+        if pac_near and nxt in topo.loop_set:
+            return self.visit_count[nxt] * 1.5
+        pen = self.visit_count[nxt] * 4.0
+        pen += self.edge_count[(cur, nxt)] * 6.0
+        if len(self.recent) >= 4:
+            r = list(self.recent)
+            if nxt == r[-2] and cur == r[-1]:
+                pen += 20.0
+            if len(r) >= 6 and r[-6:-3] == r[-3:]:
+                pen += 30.0
+        return pen
+
+
+# ===================================================================
+# Pacman Style Classifier
+# ===================================================================
+class PacmanStyleClassifier:
+    def __init__(self) -> None:
+        self._dr_sum = 0.0
+        self._dr_count = 0
+        self._reversals = 0
+        self._choke_moves = 0
+        self._total_moves = 0
+        self.style = "UNKNOWN"
+
+    def update(self, pac_prev: Pos, pac_cur: Pos, ghost: Pos,
+               topo: TopologyAnalyzer) -> None:
+        self._total_moves += 1
+        d_prev = _manhattan(pac_prev, ghost)
+        d_cur = _manhattan(pac_cur, ghost)
+        self._dr_sum += (1.0 if d_cur < d_prev else 0.0)
+        self._dr_count += 1
+        if pac_cur in topo.chokepoints or pac_cur in topo.junctions:
+            self._choke_moves += 1
+
+    def record_reversal(self) -> None:
+        self._reversals += 1
+
+    def classify(self) -> str:
+        if self._total_moves < 8:
+            self.style = "UNKNOWN"; return self.style
+        dr_rate = self._dr_sum / max(1, self._dr_count)
+        choke_rate = self._choke_moves / max(1, self._total_moves)
+        if dr_rate > 0.80:
+            self.style = "SHORTEST_PATH_CHASER"
+        elif choke_rate > 0.55:
+            self.style = "INTERCEPTOR"
+        elif dr_rate < 0.35:
+            self.style = "RANDOM_EXPLORER"
+        else:
+            self.style = "GREEDY_CHASER"
+        return self.style
+
+
+# ===================================================================
+# Policies (5 policies → Proposals)
+# ===================================================================
+class _PolicyBase:
+    name: str = "base"
+    def propose(self, ctx) -> Optional[Proposal]:
+        return None
+
+
+class HybridPolicy(_PolicyBase):
+    """Layer 0: MC + Markov + table. For close combat."""
+    name = "hybrid"
+
+    def __init__(self, mc: MCRolloutV3, ot: OfflineTable) -> None:
+        self._mc = mc; self._ot = ot
+
+    def propose(self, ctx) -> Optional[Proposal]:
+        if ctx["pac"] is None:
+            return None
+        if time.time() - ctx["t0"] > TIME_BUDGET * 0.55:
+            return None
+        me = ctx["me"]; pac = ctx["pac"]; ms = ctx["ms"]
+        legal = ctx["legal"]; preds = ctx["pac_preds"]
+        sn = ctx["step"]; t0 = ctx["t0"]; speed = ctx["speed"]
+        danger = ctx["danger_t0"]; topo = ctx["topo"]
+        anti = ctx["anti"]
+
+        candidates = [m for m in legal if _apply(me, m) not in topo.dead_ends] or legal
+        best_m = None; best_sc = float("-inf")
+        for m in candidates:
+            if time.time() - t0 > TIME_BUDGET * 0.68:
+                break
+            nxt = _apply(me, m)
+            mc_sc = self._mc.evaluate_move_cvar(me, m, preds, ms, sn, t0, speed)
+            if mc_sc is None:
+                continue
+            table_v = 0.0
+            tm = self._ot.lookup(nxt, pac)
+            if tm is not None:
+                table_v = 15.0
+            flee = _manhattan(nxt, pac) * 2.5
+            danger_v = danger.get(nxt, 0.0)
+            loop_pen = anti.penalty(nxt, me, True, topo)
+            combined = (0.35 * mc_sc + 0.20 * table_v + 0.20 * flee
+                        - 0.30 * danger_v - 0.08 * loop_pen)
+            if combined > best_sc:
+                best_sc = combined; best_m = m
+        if best_m is None:
+            return None
+        nxt = _apply(me, best_m)
+        return Proposal(best_m, best_sc, danger.get(nxt, 0.0),
+                        "high", self.name, cost=0.8, reason="mc+table+flee")
+
+
+class TablePolicy(_PolicyBase):
+    """Layer 1: Offline table + safety check."""
+    name = "table"
+
+    def __init__(self, ot: OfflineTable) -> None:
+        self._ot = ot
+
+    def propose(self, ctx) -> Optional[Proposal]:
+        if ctx["pac"] is None:
+            return None
+        me = ctx["me"]; pac = ctx["pac"]; ms = ctx["ms"]
+        legal = ctx["legal"]; danger = ctx["danger_t0"]; topo = ctx["topo"]
+        m = self._ot.lookup(me, pac)
+        if m is None or m not in legal:
+            return None
+        nxt = _apply(me, m)
+        d = danger.get(nxt, 0.0)
+        if d > 80.0 or nxt in topo.dead_ends:
+            return None
+        if _manhattan(nxt, pac) < CAPTURE_DISTANCE:
+            return None
+        value = _manhattan(nxt, pac) * 3.0 + _exits(nxt, ms) * 2.0
+        return Proposal(m, value, d, "medium", self.name, cost=0.05)
+
+
+class AlphaBetaPolicy(_PolicyBase):
+    """Layer 2: Iterative deepening alpha-beta."""
+    name = "alpha_beta"
+
+    def __init__(self, ab: AlphaBetaSearch) -> None:
+        self._ab = ab
+
+    def propose(self, ctx) -> Optional[Proposal]:
+        if ctx["pac"] is None:
+            return None
+        if time.time() - ctx["t0"] > TIME_BUDGET * 0.40:
+            return None
+        me = ctx["me"]; pac = ctx["pac"]; ms = ctx["ms"]
+        t0 = ctx["t0"]; speed = ctx["speed"]
+        history = list(ctx["ghost_hist"]); danger = ctx["danger_t0"]
+        best_overall = None
+        for depth in range(2, AB_MAX_DEPTH + 1, 2):
+            if time.time() - t0 > TIME_BUDGET * 0.60:
+                break
+            sc, mv = self._ab.search(me, pac, ms, depth, t0, speed, history)
+            if mv is not None:
+                best_overall = (sc, mv)
+            if sc is not None and sc < -50_000:
+                break
+        if best_overall is None:
+            return None
+        score, move = best_overall
+        nxt = _apply(me, move)
+        return Proposal(move, score, danger.get(nxt, 0.0),
+                        "high", self.name, cost=0.5)
+
+
+class OnePlyPolicy(_PolicyBase):
+    """Layer 3: Quick one-step evaluation."""
+    name = "one_ply"
+
+    def propose(self, ctx) -> Optional[Proposal]:
+        me = ctx["me"]; ms = ctx["ms"]; legal = ctx["legal"]
+        danger = ctx["danger_t0"]; topo = ctx["topo"]
+        preds = ctx["pac_preds"]; dc = ctx["dc"]
+        anti = ctx["anti"]; ghost_hist = ctx["ghost_hist"]
+        last_move = ctx["last_move"]
+        pac_near = ctx["pac"] is not None and _manhattan(ctx["pac"], me) <= 10
+
+        best_m = None; best_sc = float("-inf")
+        recent = set(list(ghost_hist)[-HISTORY_LEN:])
+        for m in legal:
+            nxt = _apply(me, m)
+            sc = 0.0
+            for pp, pw in preds[:6]:
+                pd = dc.dist(ms, pp)
+                d = pd.get(nxt, _manhattan(nxt, pp))
+                sc += pw * d * 14.0
+                sc -= pw * max(0, 7 - d) * 6.0
+                reach = _pacman_reach(pp, ms, ctx["speed"])
+                gap = min((_manhattan(nxt, r) for r in reach), default=INF)
+                if gap < CAPTURE_DISTANCE:
+                    sc -= pw * MC_CAPTURE_PENALTY * 0.4
+                elif gap <= 2:
+                    sc -= pw * 500.0
+            sc -= danger.get(nxt, 0.0) * 0.8
+            sc += _exits(nxt, ms) * 5.5
+            if nxt in topo.core:       sc += 24.0
+            if nxt in topo.loop_set:   sc += 20.0
+            if nxt in topo.junctions:  sc += 14.0
+            if nxt in topo.chokepoints: sc += 6.0
+            if nxt in topo.dead_ends:
+                sc -= 75.0 + topo.trap_depth.get(nxt, 1) * 9.0
+            if nxt in topo.tunnel_cells: sc -= 18.0
+            h, w = _shape(ms)
+            ed = min(nxt[0], nxt[1], h - 1 - nxt[0], w - 1 - nxt[1])
+            if ed <= 1 and _exits(nxt, ms) <= 2: sc -= 30.0
+            sc -= anti.penalty(nxt, me, pac_near, topo)
+            if nxt in recent: sc -= 26.0
+            if last_move is not None and m == last_move: sc += 2.5
+            if (last_move is not None
+                    and m.value[0] + last_move.value[0] == 0
+                    and m.value[1] + last_move.value[1] == 0):
+                sc -= 10.0
+            if sc > best_sc:
+                best_sc = sc; best_m = m
+        if best_m is None:
+            return None
+        nxt = _apply(me, best_m)
+        return Proposal(best_m, best_sc, danger.get(nxt, 0.0),
+                        "medium", self.name, cost=0.02)
+
+
+class GreedyPolicy(_PolicyBase):
+    """Layer 4: Distance + danger + escape capacity (fallback)."""
+    name = "greedy"
+
+    def propose(self, ctx) -> Optional[Proposal]:
+        me = ctx["me"]; ms = ctx["ms"]; legal = ctx["legal"]
+        preds = ctx["pac_preds"]; danger = ctx["danger_t0"]; topo = ctx["topo"]
+        anti = ctx["anti"]
+        best_m = legal[0]; best_sc = float("-inf")
+        for m in legal:
+            nxt = _apply(me, m)
+            min_d = min((_manhattan(nxt, p) for p, _ in preds), default=INF)
+            sc = min_d * 10.0 - danger.get(nxt, 0.0)
+            ec = topo.escape_capacity.get(nxt, 0)
+            sc += ec * 6.0
+            if nxt in topo.dead_ends:   sc -= 100.0
+            if nxt in topo.tunnel_cells: sc -= 20.0
+            sc -= anti.penalty(nxt, me, False, topo) * 0.5
+            if sc > best_sc:
+                best_sc = sc; best_m = m
+        nxt = _apply(me, best_m)
+        return Proposal(best_m, best_sc, danger.get(nxt, 0.0),
+                        "low", self.name, cost=0.01)
+
+
+# ===================================================================
+# Policy Portfolio + Arbitrator
+# ===================================================================
+class PolicyPortfolio:
+    def __init__(self, hybrid: HybridPolicy, table: TablePolicy,
+                 ab_pol: AlphaBetaPolicy, oneply: OnePlyPolicy,
+                 greedy: GreedyPolicy) -> None:
+        self._hybrid = hybrid; self._table = table
+        self._ab = ab_pol; self._oneply = oneply; self._greedy = greedy
+
+    def select_policies(self, mode: str, style: str) -> List[_PolicyBase]:
+        if mode == "emergency":
+            return [self._greedy, self._oneply]
+        if mode == "cheap":
+            return [self._table, self._greedy]
+        if mode == "tunnel_escape":
+            return [self._oneply, self._greedy]
+        if mode == "combat":
+            if style == "INTERCEPTOR":
+                return [self._ab, self._hybrid, self._oneply, self._greedy]
+            return [self._hybrid, self._ab, self._oneply, self._greedy]
+        return [self._table, self._oneply, self._ab, self._greedy]
+
+    @staticmethod
+    def arbitrate(proposals: List[Proposal]) -> Optional[Move]:
+        if not proposals:
+            return None
+        best = max(proposals, key=lambda p: p.score())
+        return best.action
+
+
+# ===================================================================
+# Budget Controller
+# ===================================================================
+class BudgetController:
+    @staticmethod
+    def select_mode(ghost: Pos, belief: Dict[Pos, float],
+                    danger_t0: Dict[Pos, float],
+                    topo: TopologyAnalyzer, dc: DistanceCache,
+                    ms) -> str:
+        d0 = danger_t0.get(ghost, 0.0)
+        if d0 >= FATAL_DANGER * 0.8:
+            return "emergency"
+        if ghost in topo.tunnel_cells:
+            for tc, e1, e2 in topo.tunnels:
+                if ghost in tc:
+                    for pac_pos in belief:
+                        if _manhattan(pac_pos, e1) <= 4 or _manhattan(pac_pos, e2) <= 4:
+                            return "tunnel_escape"
+        if belief:
+            best_pac = min(belief, key=lambda p: _manhattan(p, ghost))
+            dist = _manhattan(best_pac, ghost)
+            if dist <= PANIC_DISTANCE:
+                return "combat"
+            if dist > 15:
+                return "cheap"
+        return "normal"
+
+
+# ===================================================================
+# Diagnostics
+# ===================================================================
+class Diagnostics:
+    def __init__(self) -> None:
+        self.policy_failures: Dict[str, int] = defaultdict(int)
+        self.policy_usage: Dict[str, int] = defaultdict(int)
+        self.safety_rejections: int = 0
+        self.timeouts: int = 0
+
+    def record_failure(self, name: str) -> None:
+        self.policy_failures[name] += 1
+
+    def record_usage(self, name: str) -> None:
+        self.policy_usage[name] += 1
+
+    def record_rejection(self) -> None:
+        self.safety_rejections += 1
+
+
+# ===================================================================
+# Main Ghost Agent — Blind Multi-Layer
+# ===================================================================
 class GhostAgent(BaseGhostAgent):
-    """
-    Blind Ghost Agent — Partial Observability Lab 2.
+    """Blind Multi-Layer Ghost Agent with Policy Portfolio.
 
-    Decision pipeline:
-    1. Update memory map & topology.
-    2. Update belief state (collapse if visible, propagate if hidden).
-    3. Feed USL* observations for online learning.
-    4. If Pacman visible & BFS close → Paranoid Search (Alpha-Beta).
-    5. Else → POMCP-lite (MC rollouts over weighted information sets).
-    6. Anti-oscillation filter on final move.
+    Pipeline per step:
+      1. Update memory_map from observation
+      2. PacmanTracker belief update
+      3. OpponentModelEnsemble update + prediction
+      4. RiskEngine: time-expanded danger + survival margin
+      5. BudgetController mode selection
+      6. PolicyPortfolio: select policies → collect proposals
+      7. SafetyShield filter
+      8. Arbitrator → best action
+      9. Anti Line-of-Sight check
+     10. Validate / STAY
     """
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
-        self._pacman_speed: int = max(2, int(kwargs.get("pacman_speed", 2)))
+        self._speed: int = max(1, int(kwargs.get("pacman_speed", 2)))
 
-        # Memory & belief
+        # === Blind mode: Hardcoded map ===
+        self._known_map = self._build_known_map()
+        self._topo = TopologyAnalyzer()
+        self._topo.build(self._known_map)
+        self._dc = DistanceCache(maxsize=256)
+        key_cells = self._topo.junctions | self._topo.chokepoints
+        if len(key_cells) <= 60:
+            self._dc.precompute(self._known_map, key_cells)
+        self._ot = OfflineTable()
+        self._ot.build(self._known_map, self._topo)
+
+        # === Blind mode: Memory map ===
         self.memory_map: Optional[np.ndarray] = None
-        self._map_hash: int = 0
-        self._topo = Topology()
-        self._topo_built = False
 
-        # Engines
-        self._bfs   = BFSCache(maxsize=200)
-        self._usl   = USLStar()
-        self._mc    = MCRollout(self._topo, self._bfs)
-        self._ab    = ParanoidSearch(self._topo, self._bfs)
-        self._belief = BeliefState(BELIEF_PARTICLES)
-
-        # Tracking
-        self._last_pac: Optional[Pos]  = None
-        self._ghost_hist: deque[Pos]   = deque(maxlen=24)
-        self._pac_hist:   deque[Pos]   = deque(maxlen=40)
+        # === Tracking ===
+        self._tracker = PacmanTracker()
+        self._ensemble = OpponentModelEnsemble()
+        self._anti = AntiLoop()
+        self._style_clf = PacmanStyleClassifier()
+        self._diag = Diagnostics()
+        self._ghost_hist: deque[Pos] = deque(maxlen=30)
         self._last_move: Optional[Move] = None
-        self._steps_since_seen: int    = 0
-        self._initial_dist: Optional[int] = None
-        self._initial_far: bool = False
+        self._last_pac: Optional[Pos] = None
+        self._prev_pac_action: Action = (0, 0)
+
+        # === Lazy-init components (need topology) ===
+        self._risk: Optional[RiskEngine] = None
+        self._shield: Optional[SafetyShield] = None
+        self._mc: Optional[MCRolloutV3] = None
+        self._ab: Optional[AlphaBetaSearch] = None
+        self._portfolio: Optional[PolicyPortfolio] = None
+        self._lazy_init()
+
+    def _build_known_map(self) -> np.ndarray:
+        """Build hardcoded map array from KNOWN_LAYOUT_STR."""
+        h, w = len(KNOWN_LAYOUT_STR), len(KNOWN_LAYOUT_STR[0])
+        arr = np.zeros((h, w), dtype=int)
+        for r in range(h):
+            for c in range(w):
+                arr[r, c] = 1 if KNOWN_LAYOUT_STR[r][c] == '#' else 0
+        return arr
+
+    def _lazy_init(self) -> None:
+        if self._risk is not None:
+            return
+        self._risk = RiskEngine(self._topo, self._dc)
+        self._shield = SafetyShield(self._topo, self._dc, self._risk)
+        self._mc = MCRolloutV3(self._topo, self._dc, self._ensemble)
+        self._ab = AlphaBetaSearch(self._topo, self._dc, self._ensemble)
+        hp = HybridPolicy(self._mc, self._ot)
+        tp = TablePolicy(self._ot)
+        abp = AlphaBetaPolicy(self._ab)
+        opp = OnePlyPolicy()
+        gp = GreedyPolicy()
+        self._portfolio = PolicyPortfolio(hp, tp, abp, opp, gp)
 
     # ------------------------------------------------------------------
-    # Main entry point
+    # Memory Map
     # ------------------------------------------------------------------
-    def step(self, map_state, my_position, enemy_position, step_number: int) -> Move:
+    def _update_memory(self, map_state: np.ndarray) -> None:
+        if self.memory_map is None:
+            self.memory_map = np.full_like(map_state, -1, dtype=int)
+        visible_mask = (map_state != -1)
+        self.memory_map[visible_mask] = map_state[visible_mask]
+
+    # ------------------------------------------------------------------
+    # Main step
+    # ------------------------------------------------------------------
+    def step(self, map_state, my_position, enemy_position,
+             step_number: int) -> Move:
         t0 = time.time()
-        map_state = np.asarray(map_state, dtype=int)
-        me: Pos = tuple(int(v) for v in my_position)
+        ms_obs = np.asarray(map_state, dtype=int)
+        me: Pos = (int(my_position[0]), int(my_position[1]))
+        visible_pac: Optional[Pos] = None
+        if enemy_position is not None:
+            visible_pac = (int(enemy_position[0]), int(enemy_position[1]))
 
         # 1. Update memory map
-        self._update_memory(map_state)
-        ms = self.memory_map
+        self._update_memory(ms_obs)
 
-        # 2. Build topology on first call (or when map grows)
-        self._maybe_rebuild_topology(ms)
+        # Use memory_map for all algorithms; fall back to known_map for topology
+        mem = self.memory_map if self.memory_map is not None else self._known_map
 
-        # 3. Legal moves
-        legal = _legal(me, ms)
+        # 2. Ghost history + anti-loop
+        self._ghost_hist.append(me)
+        self._anti.record(me)
+
+        # 3. Pacman tracker / belief
+        belief = self._tracker.update(enemy_position, mem, self._speed)
+        pac: Optional[Pos] = None
+        if enemy_position is not None:
+            pac = (int(enemy_position[0]), int(enemy_position[1]))
+
+        # 4. Ensemble update
+        if pac is not None and self._last_pac is not None:
+            self._prev_pac_action = (pac[0] - self._last_pac[0],
+                                     pac[1] - self._last_pac[1])
+            self._style_clf.update(self._last_pac, pac, me, self._topo)
+        self._ensemble.update_if_observed(self._tracker, me, mem)
+        self._ensemble.style = self._style_clf.classify()
+
+        if pac is not None:
+            self._last_pac = pac
+
+        # 5. Ensemble prediction
+        pac_est = self._tracker.best_estimate
+        if pac_est is not None:
+            pac_preds = self._ensemble.predict_positions_2step(
+                me, pac_est, mem, self._topo, self._dc, self._speed,
+                self._prev_pac_action)
+        else:
+            default = PACMAN_START if _valid(PACMAN_START, mem) else me
+            pac_preds = [(default, 1.0)]
+
+        # 6. Risk engine
+        danger_layers = self._risk.time_expanded_danger(pac_preds, mem, self._speed)
+        danger_t0 = danger_layers[0] if danger_layers else {}
+        margin = self._risk.survival_margin(me, belief, mem, self._speed)
+
+        # 7. Legal moves (on memory map)
+        legal = _legal(me, mem)
         if not legal:
             return Move.STAY
 
-        # 4. Enemy tracking & belief update
-        if enemy_position is not None:
-            pac: Pos = tuple(int(v) for v in enemy_position)
-            self._steps_since_seen = 0
+        # Tunnel escape override
+        tunnel_move = self._tunnel_escape(me, pac, legal, mem)
 
-            # USL* observation
-            if self._last_pac is not None:
-                action = (pac[0] - self._last_pac[0], pac[1] - self._last_pac[1])
-                state  = self._usl.abstract_state(me, self._last_pac, ms)
-                self._usl.observe(state, action, ms, self._last_pac)
+        # 8. Budget mode
+        mode = BudgetController.select_mode(me, belief, danger_t0,
+                                             self._topo, self._dc, mem)
 
-            self._belief.update_visible(pac)
-            self._pac_hist.append(pac)
-            self._last_pac = pac
+        # 9. Select policies + collect proposals
+        style = self._ensemble.style
+        selected = self._portfolio.select_policies(mode, style)
 
-            if self._initial_dist is None:
-                self._initial_dist = _manhattan(me, pac)
-                self._initial_far  = self._initial_dist >= 10
-        else:
-            self._steps_since_seen += 1
-            if not self._belief.initialized:
-                self._belief.initialize_unknown(me, ms)
-            visible_now = _visible_cross_cells(me, ms, VISION_RADIUS)
-            self._belief.predict(
-                self._usl,
-                me,
-                ms,
-                self._pacman_speed,
-                forbidden_visible=visible_now,
-            )
-            pac = None
+        ctx = {
+            "me": me, "pac": pac, "ms": mem, "legal": legal,
+            "pac_preds": pac_preds, "danger_t0": danger_t0,
+            "topo": self._topo, "dc": self._dc, "speed": self._speed,
+            "step": step_number, "t0": t0, "ghost_hist": self._ghost_hist,
+            "anti": self._anti, "last_move": self._last_move,
+            "margin": margin, "belief": belief,
+        }
 
-        # 5. Track ghost history & initial distance update
-        self._ghost_hist.append(me)
+        proposals: List[Proposal] = []
+        if tunnel_move is not None:
+            nxt = _apply(me, tunnel_move)
+            proposals.append(Proposal(tunnel_move, 500.0,
+                                      danger_t0.get(nxt, 0.0),
+                                      "high", "tunnel_escape", cost=0.01))
 
-        # 6. Get Pacman hypotheses from belief state
-        pac_hypotheses = self._belief.top_hypotheses(k=6)
-        if not pac_hypotheses:
-            self._belief.initialize_unknown(me, ms)
-            pac_hypotheses = self._belief.top_hypotheses(k=6)
-        if not pac_hypotheses:
-            pac_hypotheses = [(DEFAULT_PACMAN_START if _valid(DEFAULT_PACMAN_START, ms) else me, 1.0)]
+        for policy in selected:
+            if time.time() - t0 > TIME_BUDGET * 0.82:
+                break
+            try:
+                prop = policy.propose(ctx)
+                if prop is not None:
+                    proposals.append(prop)
+            except Exception:
+                self._diag.record_failure(policy.name)
 
-        # 8. No enemy visible → exploration + belief-guided evasion
-        if pac is None:
-            move = self._blind_evasion(me, pac_hypotheses, legal, step_number, t0)
-            self._last_move = move
-            return move
+        # 10. Safety shield
+        safe_proposals = self._shield.filter(
+            proposals, me, belief, danger_t0, mem, self._speed)
+        if len(safe_proposals) < len(proposals):
+            self._diag.record_rejection()
 
-        # 9. BFS distance from Pacman
-        pd = self._bfs.dist(ms, pac)
-        bfs_d = pd.get(me, _manhattan(me, pac))
+        # 11. Anti Line-of-Sight: if Pacman visible and on same row/col, prefer perpendicular
+        move = PolicyPortfolio.arbitrate(safe_proposals)
+        if move is not None and pac is not None:
+            move = self._anti_los_adjust(me, pac, move, legal, mem)
+        if move is not None:
+            chosen = next((p for p in safe_proposals if p.action == move), None)
+            if chosen:
+                self._diag.record_usage(chosen.source)
 
-        # 10. Panic: immediately adjacent → best escape ignoring time
-        if bfs_d < CAPTURE_DISTANCE:
-            move = self._panic_escape(me, pac, pd, legal)
-            self._last_move = move
-            return move
-
-        # 11. Paranoid search when Pacman is close and visible
-        if bfs_d <= PANIC_DISTANCE:
-            _, ab_move = self._ab.search(
-                me, pac, ms,
-                max_depth=AB_MAX_DEPTH,
-                t0=t0,
-                pac_speed=self._pacman_speed,
-                history=list(self._ghost_hist),
-            )
-            if ab_move is not None:
-                recent = set(list(self._ghost_hist)[-6:])
-                direct_move = self._best_scored_move(me, legal, [(pac, 1.0)], ms, recent)
-                ab_score = self._position_safety_score(_apply(me, ab_move), [(pac, 1.0)], ms, recent)
-                direct_score = self._position_safety_score(_apply(me, direct_move), [(pac, 1.0)], ms, recent)
-                if direct_score > ab_score + 10.0:
-                    ab_move = direct_move
-                # Verify MC agrees (don't use AB if MC finds clearly better)
-                ab_move = self._mc_sanity_check(me, pac, pac_hypotheses, ab_move, legal, ms, t0)
-                self._last_move = ab_move
-                return ab_move
-
-        # 12. Strategic: MC rollouts over belief state
-        move = self._mc_strategic(me, pac_hypotheses, legal, ms, step_number, t0)
+        # 12. Validate
+        move = self._validate(me, move, legal, mem)
         self._last_move = move
         return move
 
     # ------------------------------------------------------------------
-    # Memory map
+    # Tunnel Escape
     # ------------------------------------------------------------------
-    def _update_memory(self, map_state) -> None:
-        map_state = np.asarray(map_state, dtype=int)
-        if self.memory_map is None:
-            self.memory_map = np.full_like(map_state, -1, dtype=int)
-        visible = (map_state != -1)
-        # Count newly revealed cells
-        newly_revealed = int(np.sum(visible & (self.memory_map == -1)))
-        self.memory_map[visible] = map_state[visible]
-        # Rebuild topology only when significant new info is gained
-        if newly_revealed > 2:
-            self._map_hash += 1
-            self._bfs._map_hash = self._map_hash
-            self._bfs.invalidate()
-            self._topo_built = False
-
-    # ------------------------------------------------------------------
-    # Topology
-    # ------------------------------------------------------------------
-    def _maybe_rebuild_topology(self, ms) -> None:
-        if not self._topo_built:
-            self._topo.build(ms)
-            self._mc  = MCRollout(self._topo, self._bfs)
-            self._ab  = ParanoidSearch(self._topo, self._bfs)
-            self._topo_built = True
-
-    # ------------------------------------------------------------------
-    # Shared safety evaluation
-    # ------------------------------------------------------------------
-    def _position_safety_score(
-        self,
-        pos: Pos,
-        pac_hypotheses: List[Tuple[Pos, float]],
-        ms,
-        recent: Optional[Set[Pos]] = None,
-    ) -> float:
-        score = 0.0
-        recent = recent or set()
-
-        for pac_pos, weight in pac_hypotheses[:6]:
-            pd = self._bfs.dist(ms, pac_pos)
-            d = pd.get(pos, _manhattan(pos, pac_pos))
-            score += weight * d * 13.5
-            score -= weight * max(0, 7 - d) * 5.5
-
-            pac_reach = _pacman_reach(pac_pos, ms, self._pacman_speed)
-            reach_gap = min((_manhattan(pos, p) for p in pac_reach), default=INF)
-            if reach_gap < CAPTURE_DISTANCE:
-                score -= weight * MC_CAPTURE_PENALTY * 0.42
-            elif reach_gap <= 2:
-                score -= weight * 600.0
-
-            if _in_cross_los(pac_pos, pos, ms, VISION_RADIUS):
-                score -= weight * 20.0
-            else:
-                score += weight * 7.0
-
-        exits = _exits(pos, ms)
-        score += exits * 5.0
-        h, w = _shape(ms)
-        edge_depth = min(pos[0], pos[1], h - 1 - pos[0], w - 1 - pos[1])
-        closest_hyp = min(
-            (self._bfs.dist(ms, pac_pos).get(pos, _manhattan(pos, pac_pos)) for pac_pos, _ in pac_hypotheses[:6]),
-            default=INF,
-        )
-        if edge_depth <= 1 and exits <= 2:
-            score -= 28.0
-            if closest_hyp <= 6:
-                score -= 45.0
-        if closest_hyp <= 5 and exits <= 2:
-            score -= 38.0
-        if pos in self._topo.core:
-            score += 22.0
-        if pos in self._topo.loop_set:
-            score += 18.0
-        if pos in self._topo.junctions:
-            score += 12.0
-        if pos in self._topo.dead_ends:
-            score -= 72.0 + self._topo.danger_depth.get(pos, 1) * 8.0
-        if pos in recent:
-            score -= 24.0
-            hist = list(self._ghost_hist)
-            if len(hist) >= 2 and pos == hist[-2]:
-                score -= 14.0
-        return score
-
-    def _best_scored_move(
-        self,
-        me: Pos,
-        legal: List[Move],
-        pac_hypotheses: List[Tuple[Pos, float]],
-        ms,
-        recent: Optional[Set[Pos]] = None,
-    ) -> Move:
-        best_move = legal[0] if legal else Move.STAY
-        best_score = float("-inf")
-        for move in legal:
-            nxt = _apply(me, move)
-            score = self._position_safety_score(nxt, pac_hypotheses, ms, recent)
-            if self._last_move is not None and move == self._last_move:
-                score += 2.0
-            if (
-                self._last_move is not None
-                and move.value[0] + self._last_move.value[0] == 0
-                and move.value[1] + self._last_move.value[1] == 0
-            ):
-                score -= 8.0
-            key = (score, -_move_key(move), -nxt[0], -nxt[1])
-            best_key = (best_score, -_move_key(best_move), -_apply(me, best_move)[0], -_apply(me, best_move)[1])
-            if key > best_key:
-                best_score = score
-                best_move = move
-        return best_move
-
-    def _should_hold_stealth(
-        self,
-        me: Pos,
-        pac_hypotheses: List[Tuple[Pos, float]],
-        ms,
-        step_number: int,
-    ) -> bool:
-        if step_number > 100:
-            return False
-        if me in self._topo.dead_ends or _exits(me, ms) < 2:
-            return False
-        min_dist = INF
-        los_risk = 0.0
-        reach_risk = 0.0
-        for pac_pos, weight in pac_hypotheses[:6]:
-            d = self._bfs.dist(ms, pac_pos).get(me, _manhattan(me, pac_pos))
-            min_dist = min(min_dist, d)
-            if _in_cross_los(pac_pos, me, ms, VISION_RADIUS):
-                los_risk += weight
-            pac_reach = _pacman_reach(pac_pos, ms, self._pacman_speed)
-            if any(_manhattan(me, pos) < CAPTURE_DISTANCE for pos in pac_reach):
-                reach_risk += weight
-        return min_dist >= 14 and los_risk < 0.18 and reach_risk == 0.0
-
-    def _usl_start_move(self, me: Pos, legal: List[Move], step_number: int) -> Optional[Move]:
-        """Deterministic opening for the classic start, then hand off to search."""
-        if step_number > 5:
+    def _tunnel_escape(self, me: Pos, pac: Optional[Pos],
+                        legal: List[Move], ms) -> Optional[Move]:
+        if pac is None or me not in self._topo.tunnel_cells:
             return None
-        opening = {
-            (9, 10): Move.RIGHT,
-            (9, 11): Move.RIGHT,
-            (9, 12): Move.RIGHT,
-            (9, 13): Move.DOWN,
-            (10, 13): Move.DOWN,
-        }
-        move = opening.get(me)
-        if move in legal:
-            return move
+        for tc, e1, e2 in self._topo.tunnels:
+            if me not in tc:
+                continue
+            d1 = _manhattan(pac, e1); d2 = _manhattan(pac, e2)
+            if min(d1, d2) > 6:
+                return None
+            target = e2 if d1 < d2 else e1
+            td = self._dc.dist(ms, target)
+            best_m = None; best_d = INF
+            for m in legal:
+                nxt = _apply(me, m)
+                d = td.get(nxt, INF)
+                if d < best_d:
+                    best_d = d; best_m = m
+            return best_m
         return None
 
     # ------------------------------------------------------------------
-    # Panic: immediate danger
+    # Anti Line-of-Sight
     # ------------------------------------------------------------------
-    def _panic_escape(self, me: Pos, pac: Pos, pd: Dict[Pos, int], legal: List[Move]) -> Move:
-        _ = pd
-        recent = set(list(self._ghost_hist)[-4:])
-        return self._best_scored_move(me, legal, [(pac, 1.0)], self.memory_map, recent)
-
-    # ------------------------------------------------------------------
-    # MC sanity check: compare AB move vs MC best
-    # ------------------------------------------------------------------
-    def _mc_sanity_check(
-        self,
-        me: Pos,
-        pac: Pos,
-        pac_hypotheses: List[Tuple[Pos, float]],
-        ab_move: Move,
-        legal: List[Move],
-        ms,
-        t0: float,
-    ) -> Move:
-        if time.time() - t0 > TIME_BUDGET * 0.78:
-            return ab_move
-        mc_move = self._mc_strategic(me, pac_hypotheses, legal, ms, 0, t0, fast=True)
-        if mc_move is None or mc_move == ab_move:
-            return ab_move
-        ab_pos = _apply(me, ab_move)
-        mc_pos = _apply(me, mc_move)
-        recent = set(list(self._ghost_hist)[-6:])
-        ab_score = self._position_safety_score(ab_pos, pac_hypotheses, ms, recent)
-        mc_score = self._position_safety_score(mc_pos, pac_hypotheses, ms, recent)
-        if mc_score > ab_score + 16.0 and mc_pos not in self._topo.dead_ends:
-            return mc_move
-        return ab_move
+    def _anti_los_adjust(self, me: Pos, pac: Pos, chosen: Move,
+                          legal: List[Move], ms) -> Move:
+        """If on same row/col as Pacman, prefer perpendicular moves."""
+        # Same row: prefer UP/DOWN
+        if me[0] == pac[0]:
+            perp = [m for m in legal if m in (Move.UP, Move.DOWN)]
+            if perp:
+                # Among perpendicular, pick the one with more exits
+                best = max(perp, key=lambda m: _exits(_apply(me, m), ms))
+                return best
+        # Same column: prefer LEFT/RIGHT
+        if me[1] == pac[1]:
+            perp = [m for m in legal if m in (Move.LEFT, Move.RIGHT)]
+            if perp:
+                best = max(perp, key=lambda m: _exits(_apply(me, m), ms))
+                return best
+        return chosen
 
     # ------------------------------------------------------------------
-    # Blind evasion: Pacman not visible, use belief state
+    # Validate
     # ------------------------------------------------------------------
-    def _blind_evasion(
-        self,
-        me: Pos,
-        pac_hypotheses: List[Tuple[Pos, float]],
-        legal: List[Move],
-        step_number: int,
-        t0: float,
-    ) -> Move:
-        ms = self.memory_map
-        if not legal:
-            return Move.STAY
-
-        opening_move = self._usl_start_move(me, legal, step_number)
-        if opening_move is not None:
-            return opening_move
-
-        if self._should_hold_stealth(me, pac_hypotheses, ms, step_number):
-            return Move.STAY
-
-        recent = set(list(self._ghost_hist)[-6:])
-        best_move = self._best_scored_move(me, legal, pac_hypotheses, ms, recent)
-
-        # During the first 100 deterministic steps, survival outranks map coverage.
-        if step_number > 100 and self._steps_since_seen >= 24:
-            frontier_move = self._frontier_explore(me, legal, ms, pac_hypotheses)
-            frontier_pos = _apply(me, frontier_move)
-            best_pos = _apply(me, best_move)
-            frontier_score = self._position_safety_score(frontier_pos, pac_hypotheses, ms, recent)
-            best_score = self._position_safety_score(best_pos, pac_hypotheses, ms, recent)
-            if frontier_score >= best_score - 12.0:
-                best_move = frontier_move
-
-        if time.time() - t0 < TIME_BUDGET * 0.55:
-            mc_m = self._mc_strategic(me, pac_hypotheses, legal, ms, 0, t0, fast=True)
-            if mc_m is not None and mc_m != best_move:
-                mc_pos = _apply(me, mc_m)
-                cur_pos = _apply(me, best_move)
-                mc_score = self._position_safety_score(mc_pos, pac_hypotheses, ms, recent)
-                cur_score = self._position_safety_score(cur_pos, pac_hypotheses, ms, recent)
-                if mc_score > cur_score + 8.0:
-                    best_move = mc_m
-
-        return best_move
-
-    # ------------------------------------------------------------------
-    # Frontier exploration (when blind for many steps)
-    # ------------------------------------------------------------------
-    def _frontier_explore(
-        self,
-        me: Pos,
-        legal: List[Move],
-        ms,
-        pac_hypotheses: List[Tuple[Pos, float]],
-    ) -> Move:
-        """Move toward cells at the boundary between known and unknown."""
-        h, w = _shape(ms)
-        frontier_target: Optional[Pos] = None
-        best_score = float("-inf")
-        dist_from_me = self._bfs.dist(ms, me)
-        recent = set(list(self._ghost_hist)[-6:])
-
-        for r in range(h):
-            for c in range(w):
-                if _cell(ms, r, c) != 0:
-                    continue
-                pos = (r, c)
-                for m in MOVE_ORDER:
-                    nb = _apply(pos, m)
-                    nr, nc = nb
-                    if 0 <= nr < h and 0 <= nc < w and _cell(ms, nr, nc) == -1:
-                        d = dist_from_me.get(pos, _manhattan(pos, me))
-                        safety = self._position_safety_score(pos, pac_hypotheses, ms, recent)
-                        score = safety - d * 3.0
-                        if score > best_score:
-                            best_score = score
-                            frontier_target = pos
-                        break
-
-        if frontier_target is None:
-            return self._best_scored_move(me, legal, pac_hypotheses, ms, recent)
-        path = astar(ms, me, frontier_target)
-        if path and path[0] in legal:
-            return path[0]
-        return self._best_scored_move(me, legal, pac_hypotheses, ms, recent)
-
-    # ------------------------------------------------------------------
-    # MC strategic: evaluate candidates via POMCP-lite
-    # ------------------------------------------------------------------
-    def _mc_strategic(
-        self,
-        me: Pos,
-        pac_hypotheses: List[Tuple[Pos, float]],
-        legal: List[Move],
-        ms,
-        step_number: int,
-        t0: float,
-        fast: bool = False,
-    ) -> Optional[Move]:
-        if not legal:
-            return None
-
-        recent = set(list(self._ghost_hist)[-HISTORY_LEN:])
-        # Pre-filter obviously bad moves
-        candidates = [m for m in legal if _apply(me, m) not in self._topo.dead_ends] or legal
-
-        # Greedy pre-sort: prefer moves away from top Pacman hypothesis
-        top_pac = pac_hypotheses[0][0] if pac_hypotheses else me
-        pd_top = self._bfs.dist(ms, top_pac)
-        candidates.sort(key=lambda m: (-pd_top.get(_apply(me, m), 0), _move_key(m)))
-
-        if fast:
-            candidates = candidates[:3]
-
-        best_move: Optional[Move] = None
-        best_combined = float("-inf")
-
-        for m in candidates:
-            if time.time() - t0 > TIME_BUDGET * 0.84:
-                break
-            nxt = _apply(me, m)
-
-            # MC rollout score
-            mc_score = self._mc.evaluate_move(me, m, pac_hypotheses, ms, step_number, t0, self._pacman_speed)
-            if mc_score is None:
-                continue
-
-            det_score = self._position_safety_score(nxt, pac_hypotheses, ms, recent)
-
-            combined = mc_score * 0.80 + det_score * 0.20
-            if (
-                combined > best_combined
-                or (
-                    combined == best_combined
-                    and best_move is not None
-                    and _move_key(m) < _move_key(best_move)
-                )
-            ):
-                best_combined = combined
-                best_move = m
-
-        return best_move
+    @staticmethod
+    def _validate(me: Pos, move: Optional[Move], legal: List[Move],
+                   ms) -> Move:
+        if move is None:
+            return legal[0] if legal else Move.STAY
+        nxt = _apply(me, move)
+        if _valid(nxt, ms) and move in legal:
+            return move
+        return legal[0] if legal else Move.STAY
