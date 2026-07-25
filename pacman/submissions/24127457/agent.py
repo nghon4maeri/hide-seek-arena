@@ -929,5 +929,3 @@ class PacmanAgent(BasePacmanAgent):
             else: break
         self._cached_my_pos = exp_pos
         return result
-
-

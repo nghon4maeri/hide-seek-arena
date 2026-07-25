@@ -349,7 +349,7 @@ class GhostSearchEvaluator:
         else:
             value = float("inf")
             for nxt1 in self.neighbors(ppos):
-                v = self._pac_speed2(gpos, ppos, nxt1, depth - 1, alpha, beta, pd, ms, t0, budget)
+                v = self._pac_speed2(gpos, ppos_orig, nxt1, depth - 1, alpha, beta, pd, ms, t0, budget)
                 if v is None: return None
                 if v < value: value = v
                 if value <= alpha: break
