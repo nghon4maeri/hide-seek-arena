@@ -75,6 +75,14 @@ HISTORY_LEN        = 12
 BELIEF_MAX_CELLS   = 18
 DANGER_HORIZON     = 3
 MARKOV_LIMIT       = 6
+RECENT_CELL_BAN    = 20    # Number of recent steps to avoid revisiting
+
+# Early Branch Priority
+EARLY_BRANCH_STEPS = 100
+
+# Zone Navigation
+ZONE_SWITCH_INTERVAL = 12   # Switch target zone every N steps
+ZONE_NAMES = ("top", "center", "bottom", "left", "right")
 
 # Hardcoded Known Layout
 KNOWN_LAYOUT_STR = [
@@ -447,6 +455,199 @@ class TopologyAnalyzer:
                        if _valid(_apply(pos, m), ms)
                        and _apply(pos, m) not in self.dead_ends)
             self.escape_capacity[pos] = safe
+
+
+# ===================================================================
+# Zone Navigator
+# ===================================================================
+class ZoneNavigator:
+    """Divides the map into 5 overlapping zones (top, center, bottom,
+    left, right) and provides waypoint navigation to switch zones
+    frequently, always steering Ghost away from predicted Pacman zone.
+
+    Zone boundaries (21×21 map):
+      top:    rows  1–6   (all cols)
+      center: rows  7–13  (all cols)
+      bottom: rows 14–19  (all cols)
+      left:   cols  1–6   (all rows)
+      right:  cols 14–19  (all rows)
+    """
+
+    def __init__(self, ms, topo: TopologyAnalyzer) -> None:
+        h, w = _shape(ms)
+        # Row/col boundaries — thirds
+        r3 = h // 3
+        c3 = w // 3
+        self._row_top    = r3              # rows < r3
+        self._row_bot    = h - r3          # rows >= h-r3
+        self._col_left   = c3              # cols < c3
+        self._col_right  = w - c3          # cols >= w-c3
+
+        # Build per-zone open cells and representative waypoints
+        self._zone_cells: Dict[str, Set[Pos]] = {
+            "top": set(), "center": set(), "bottom": set(),
+            "left": set(), "right": set(),
+        }
+        for r in range(h):
+            for c in range(w):
+                if _cell(ms, r, c) == 1:
+                    continue
+                pos = (r, c)
+                if r < self._row_top:
+                    self._zone_cells["top"].add(pos)
+                elif r >= self._row_bot:
+                    self._zone_cells["bottom"].add(pos)
+                else:
+                    self._zone_cells["center"].add(pos)
+                if c < self._col_left:
+                    self._zone_cells["left"].add(pos)
+                elif c >= self._col_right:
+                    self._zone_cells["right"].add(pos)
+
+        # Pre-select a junction waypoint per zone (best junction for navigation)
+        self._waypoints: Dict[str, Pos] = {}
+        for zname, cells in self._zone_cells.items():
+            juncs = [p for p in cells if p in topo.junctions]
+            if juncs:
+                # Pick junction closest to zone center-of-mass
+                if cells:
+                    cr = sum(p[0] for p in cells) / len(cells)
+                    cc = sum(p[1] for p in cells) / len(cells)
+                    juncs.sort(key=lambda p: abs(p[0] - cr) + abs(p[1] - cc))
+                self._waypoints[zname] = juncs[0]
+            elif cells:
+                # Fallback: pick most central open cell
+                cr = sum(p[0] for p in cells) / len(cells)
+                cc = sum(p[1] for p in cells) / len(cells)
+                best = min(cells, key=lambda p: abs(p[0] - cr) + abs(p[1] - cc))
+                self._waypoints[zname] = best
+
+        # Zone transition order for switching
+        self._zone_cycle = ["top", "right", "bottom", "left", "center"]
+        self._current_target_zone: Optional[str] = None
+        self._steps_in_zone: int = 0
+        self._last_zone: Optional[str] = None
+
+        # Opposite zone mapping (for avoiding Pacman)
+        self._opposite: Dict[str, str] = {
+            "top": "bottom", "bottom": "top",
+            "left": "right", "right": "left",
+            "center": "top",  # center → go to top (away from Pacman start)
+        }
+
+    def classify(self, pos: Pos) -> str:
+        """Return the primary zone for a position."""
+        r, c = pos
+        if r < self._row_top:
+            return "top"
+        if r >= self._row_bot:
+            return "bottom"
+        if c < self._col_left:
+            return "left"
+        if c >= self._col_right:
+            return "right"
+        return "center"
+
+    def predict_pacman_zone(
+        self, belief: Dict[Pos, float], pac_preds: List[Tuple[Pos, float]]
+    ) -> str:
+        """Predict which zone Pacman is most likely in, using belief +
+        ensemble predictions."""
+        zone_prob: Dict[str, float] = {z: 0.0 for z in ZONE_NAMES}
+        # Belief contributions
+        for pos, w in belief.items():
+            zone_prob[self.classify(pos)] += w
+        # Ensemble prediction contributions (weighted lower)
+        for pos, w in pac_preds[:6]:
+            zone_prob[self.classify(pos)] += w * 0.5
+        if not any(zone_prob.values()):
+            return self.classify(PACMAN_START)
+        return max(zone_prob, key=lambda z: zone_prob[z])
+
+    def select_target_zone(
+        self, ghost: Pos, belief: Dict[Pos, float],
+        pac_preds: List[Tuple[Pos, float]], step_number: int,
+    ) -> str:
+        """Select the best target zone, balancing:
+        1. Go to the zone opposite to Pacman's predicted zone
+        2. Switch zones frequently (every ZONE_SWITCH_INTERVAL steps)
+        3. Avoid staying in the same zone too long
+        """
+        my_zone = self.classify(ghost)
+        pac_zone = self.predict_pacman_zone(belief, pac_preds)
+        self._steps_in_zone += 1
+
+        # Force zone switch if we've been in one zone too long
+        need_switch = (
+            self._steps_in_zone >= ZONE_SWITCH_INTERVAL
+            or self._current_target_zone is None
+            or my_zone == pac_zone
+        )
+
+        if need_switch:
+            # Primary: opposite of Pacman's zone
+            opp = self._opposite.get(pac_zone, "top")
+
+            # If we're already in the opposite zone, pick the next in cycle
+            if opp == my_zone:
+                # Cycle through zones that are not pac_zone or my_zone
+                candidates = [z for z in self._zone_cycle
+                              if z != pac_zone and z != my_zone]
+                if candidates:
+                    # Prefer zone we haven't visited recently
+                    if self._last_zone in candidates:
+                        candidates.remove(self._last_zone)
+                    opp = candidates[0] if candidates else self._zone_cycle[0]
+
+            self._last_zone = self._current_target_zone
+            self._current_target_zone = opp
+            self._steps_in_zone = 0
+
+        return self._current_target_zone
+
+    def get_waypoint(self, target_zone: str) -> Optional[Pos]:
+        """Return the representative waypoint for a zone."""
+        return self._waypoints.get(target_zone)
+
+    def navigate_toward_zone(
+        self, ghost: Pos, target_zone: str, legal: List[Move],
+        ms, topo: TopologyAnalyzer, dc: DistanceCache,
+        danger_t0: Dict[Pos, float],
+        pac_preds: List[Tuple[Pos, float]],
+    ) -> Optional[Move]:
+        """Return the best move to navigate toward the target zone,
+        considering safety and topology."""
+        waypoint = self.get_waypoint(target_zone)
+        if waypoint is None:
+            return None
+
+        # If already at waypoint, no zone move needed
+        if ghost == waypoint:
+            return None
+
+        # Use A* to find path, then evaluate first move
+        path = astar(ms, ghost, waypoint)
+        if not path:
+            return None
+
+        first_move = path[0]
+        if first_move not in legal:
+            return None
+
+        nxt = _apply(ghost, first_move)
+
+        # Safety checks: don't navigate into dead ends or high-danger cells
+        if nxt in topo.dead_ends:
+            return None
+        if danger_t0.get(nxt, 0.0) >= FATAL_DANGER * 0.7:
+            return None
+
+        # Don't navigate toward Pacman predictions
+        for pp, pw in pac_preds[:4]:
+            if pw > 0.2 and _manhattan(nxt, pp) < CAPTURE_DISTANCE + 1:
+                return None
+
+        return first_move
 
 
 # ===================================================================
@@ -1186,6 +1387,16 @@ class AntiLoop:
             return self.visit_count[nxt] * 1.5
         pen = self.visit_count[nxt] * 4.0
         pen += self.edge_count[(cur, nxt)] * 6.0
+
+        # --- Ban revisiting positions from the last RECENT_CELL_BAN steps ---
+        if self.recent:
+            recent_list = list(self.recent)
+            ban_window = recent_list[-RECENT_CELL_BAN:]
+            if nxt in ban_window:
+                # Higher penalty the more recently it was visited
+                recency_index = list(reversed(ban_window)).index(nxt)
+                pen += 100.0 + recency_index * 25.0  # 100, 125, 150, 175, 200
+
         if len(self.recent) >= 4:
             r = list(self.recent)
             if nxt == r[-2] and cur == r[-1]:
@@ -1555,6 +1766,9 @@ class GhostAgent(BaseGhostAgent):
         self._last_pac: Optional[Pos] = None
         self._prev_pac_action: Action = (0, 0)
 
+        # === Zone Navigator ===
+        self._zone_nav = ZoneNavigator(self._known_map, self._topo)
+
         # === Lazy-init components (need topology) ===
         self._risk: Optional[RiskEngine] = None
         self._shield: Optional[SafetyShield] = None
@@ -1657,6 +1871,19 @@ class GhostAgent(BaseGhostAgent):
         # Tunnel escape override
         tunnel_move = self._tunnel_escape(me, pac, legal, mem)
 
+        # 7b. Early branching priority
+        early_branch_move = None
+        if step_number <= EARLY_BRANCH_STEPS:
+            early_branch_move = self._early_branch_priority(
+                me, legal, pac_preds, belief, danger_t0, mem, step_number)
+
+        # 7c. Zone navigation — pick target zone & navigate
+        target_zone = self._zone_nav.select_target_zone(
+            me, belief, pac_preds, step_number)
+        zone_move = self._zone_nav.navigate_toward_zone(
+            me, target_zone, legal, mem, self._topo, self._dc,
+            danger_t0, pac_preds)
+
         # 8. Budget mode
         mode = BudgetController.select_mode(me, belief, danger_t0,
                                              self._topo, self._dc, mem)
@@ -1675,6 +1902,24 @@ class GhostAgent(BaseGhostAgent):
         }
 
         proposals: List[Proposal] = []
+        # Early branch proposal — high priority at junctions
+        if early_branch_move is not None:
+            nxt = _apply(me, early_branch_move)
+            proposals.append(Proposal(early_branch_move, 600.0,
+                                      danger_t0.get(nxt, 0.0),
+                                      "high", "early_branch", cost=0.02,
+                                      reason="junction branch away from pacman"))
+        # Zone navigation proposal — guides Ghost between zones
+        if zone_move is not None:
+            nxt = _apply(me, zone_move)
+            # Higher value when Ghost is in same zone as Pacman (urgent to leave)
+            my_zone = self._zone_nav.classify(me)
+            pac_zone = self._zone_nav.predict_pacman_zone(belief, pac_preds)
+            zone_value = 450.0 if my_zone == pac_zone else 350.0
+            proposals.append(Proposal(zone_move, zone_value,
+                                      danger_t0.get(nxt, 0.0),
+                                      "medium", "zone_nav", cost=0.03,
+                                      reason=f"navigate to {target_zone} zone"))
         if tunnel_move is not None:
             nxt = _apply(me, tunnel_move)
             proposals.append(Proposal(tunnel_move, 500.0,
@@ -1734,6 +1979,98 @@ class GhostAgent(BaseGhostAgent):
                     best_d = d; best_m = m
             return best_m
         return None
+
+    # ------------------------------------------------------------------
+    # Early Branch Priority (first 20 steps)
+    # ------------------------------------------------------------------
+    def _early_branch_priority(
+        self, me: Pos, legal: List[Move],
+        pac_preds: List[Tuple[Pos, float]],
+        belief: Dict[Pos, float],
+        danger_t0: Dict[Pos, float],
+        ms, step_number: int,
+    ) -> Optional[Move]:
+        """At junctions (≥3 exits) during the first 20 steps, prefer
+        branches where Pacman is least likely to appear.
+
+        Scoring per candidate move:
+          + weighted distance from all predicted Pacman positions
+          + topology safety bonus (core / loop / junction)
+          + escape capacity bonus
+          - danger penalty
+          - dead-end / tunnel penalty
+          - anti-loop penalty
+        """
+        topo = self._topo
+        # Only activate at junctions (ngã 3+ / ngã 4)
+        n_exits = len(legal)
+        if n_exits < 3:
+            return None
+
+        best_move: Optional[Move] = None
+        best_score = float("-inf")
+
+        # Pre-gather Pacman belief centroid for tie-breaking
+        if belief:
+            cx = sum(p[0] * w for p, w in belief.items()) / max(1e-9, sum(belief.values()))
+            cy = sum(p[1] * w for p, w in belief.items()) / max(1e-9, sum(belief.values()))
+            pac_centroid: Pos = (int(round(cx)), int(round(cy)))
+        else:
+            pac_centroid = PACMAN_START
+
+        for m in legal:
+            nxt = _apply(me, m)
+            if not _valid(nxt, ms):
+                continue
+
+            sc = 0.0
+
+            # --- Distance from predicted Pacman positions (higher = safer) ---
+            for pp, pw in pac_preds[:8]:
+                d = _manhattan(nxt, pp)
+                sc += pw * d * 12.0
+
+            # --- Distance from belief centroid ---
+            sc += _manhattan(nxt, pac_centroid) * 5.0
+
+            # --- Topology safety ---
+            if nxt in topo.core:       sc += 25.0
+            if nxt in topo.loop_set:   sc += 20.0
+            if nxt in topo.junctions:  sc += 15.0
+            if nxt in topo.chokepoints: sc += 5.0
+
+            # Escape capacity: more exits downstream = better
+            ec = topo.escape_capacity.get(nxt, 0)
+            sc += ec * 8.0
+
+            # --- Penalties ---
+            if nxt in topo.dead_ends:
+                sc -= 80.0 + topo.trap_depth.get(nxt, 1) * 10.0
+            if nxt in topo.tunnel_cells:
+                sc -= 20.0
+
+            # Danger penalty
+            sc -= danger_t0.get(nxt, 0.0) * 0.6
+
+            # Anti-loop: discourage revisiting
+            pac_near = any(_manhattan(pp, me) <= 8 for pp, _ in pac_preds[:4])
+            sc -= self._anti.penalty(nxt, me, pac_near, topo) * 0.7
+
+            # Prefer continuing forward (avoid immediate reversal)
+            if (self._last_move is not None
+                    and m.value[0] + self._last_move.value[0] == 0
+                    and m.value[1] + self._last_move.value[1] == 0):
+                sc -= 15.0
+
+            # Slight bonus for turning at junction (actual branching)
+            if self._last_move is not None and m != self._last_move:
+                sc += 8.0
+
+            if sc > best_score:
+                best_score = sc
+                best_move = m
+
+        return best_move
 
     # ------------------------------------------------------------------
     # Anti Line-of-Sight
