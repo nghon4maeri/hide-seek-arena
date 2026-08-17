@@ -92,15 +92,25 @@ CAMP_ROTATE_STEPS  = 35       # Rotate camp every N steps
 # --- Early Escape ---
 EARLY_ESCAPE_STEPS = 20       # First N steps: prioritize max distance from Pacman start
 
-# Hardcoded route: 3R → 2D → 6L → 2D → 6L → 2D → STAY
+#right
 OPTIMAL_ESCAPE_ROUTE: Tuple[Move, ...] = (
-    Move.RIGHT, Move.RIGHT, Move.RIGHT,                            # 3 RIGHT
+    Move.RIGHT, Move.RIGHT, Move.RIGHT, Move.RIGHT, Move.RIGHT,  # 5 RIGHT
+    Move.DOWN, Move.DOWN, Move.DOWN, Move.DOWN,                    # 4 DOWN
+    Move.RIGHT, Move.RIGHT, Move.RIGHT, Move.RIGHT,                # 4 RIGHT
     Move.DOWN, Move.DOWN,                                          # 2 DOWN
-    Move.LEFT, Move.LEFT, Move.LEFT, Move.LEFT, Move.LEFT, Move.LEFT,  # 6 LEFT
-    Move.DOWN, Move.DOWN,                                          # 2 DOWN
-    Move.LEFT, Move.LEFT, Move.LEFT, Move.LEFT, Move.LEFT, Move.LEFT,  # 6 LEFT
-    Move.DOWN, Move.DOWN,                                          # 2 DOWN
-) + (Move.STAY,) * 179  # STAY for remaining steps (total = 200)
+) + (Move.STAY,) * 185
+
+
+#left
+# Hardcoded route: 3R → 2D → 6L → 2D → 6L → 2D → STAY
+# OPTIMAL_ESCAPE_ROUTE: Tuple[Move, ...] = (
+#     Move.RIGHT, Move.RIGHT, Move.RIGHT,                            # 3 RIGHT
+#     Move.DOWN, Move.DOWN,                                          # 2 DOWN
+#     Move.LEFT, Move.LEFT, Move.LEFT, Move.LEFT, Move.LEFT, Move.LEFT,  # 6 LEFT
+#     Move.DOWN, Move.DOWN,                                          # 2 DOWN
+#     Move.LEFT, Move.LEFT, Move.LEFT, Move.LEFT, Move.LEFT, Move.LEFT,  # 6 LEFT
+#     Move.DOWN, Move.DOWN,                                          # 2 DOWN
+# ) + (Move.STAY,) * 179  # STAY for remaining steps (total = 200)
 ESCAPE_ROUTE_LEN = len(OPTIMAL_ESCAPE_ROUTE)  # 200 steps
 
 # --- Ensemble (simplified to 3 models) ---
