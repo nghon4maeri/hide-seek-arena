@@ -35,6 +35,7 @@ layout = [
 - Tận dụng không gian lớn của map để ưu tiên các di chuyển rộng thay vì di chuyển loanh quanh, nhưng phải suy tính để tránh pacman bắt
 - Các thuật toán phải linh hoạt , thay đổi theo tình huống và vị trí hiện tại của pacman agent
 - Triển khai blind ghost agent theo multi-layers như ở non-blind ghost version 
+- Thực hiện hướng đi của blind ghost agent như sau: luôn đi về phái trước - không được quay đầu do dự tại một điểm, khi gặp ngã rẽ ưu tiên quẹo ngay, dùng map cache để tránh đi lại vào những ô đã đi
 - Nếu trong quá trình di chuyển mà gặp pacman, phải cố gắng di chuyển rẻ nhánh nằm ở hướng ngược lại của pacman, thực hiện ưu tiên rẽ nhánh để - tránh cùng nằm trên đường thẳng với pacman
 
 **Một số điều kiện cần phải tuần thủ khi thực hiện Blind Ghost Agent như sau:
