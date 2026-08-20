@@ -21,9 +21,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run a short Blind workspace smoke test."
     )
-    parser.add_argument("--seek", default="team_submission",
+    parser.add_argument("--seek", default="nam",
                         help="Pacman/seeker submission ID.")
-    parser.add_argument("--hide", default="example_student",
+    parser.add_argument("--hide", default="nam",
                         help="Ghost/hider submission ID.")
     parser.add_argument("--max-steps", type=int, default=5,
                         help="Short smoke-test step limit.")

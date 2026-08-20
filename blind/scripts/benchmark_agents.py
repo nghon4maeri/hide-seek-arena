@@ -42,9 +42,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run benchmark matches for Blind Adversary."
     )
-    parser.add_argument("--seek", default="team_submission",
+    parser.add_argument("--seek", default="nam",
                         help="Pacman/seeker submission ID.")
-    parser.add_argument("--hide", default="example_student",
+    parser.add_argument("--hide", default="nam",
                         help="Ghost/hider submission ID.")
     parser.add_argument("--games", type=int, default=10,
                         help="Number of repeated games.")
