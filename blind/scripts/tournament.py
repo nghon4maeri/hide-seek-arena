@@ -52,7 +52,7 @@ class PathLoader(AgentLoader):
 
 def play_game(seek_agent, hide_agent, max_steps=200, capture_distance=2,
               pacman_speed=2, pacman_obs=5, ghost_obs=5, seed=None,
-              step_timeout=None):
+              step_timeout=None, deterministic_starts=False):
     """Run one game in-process. Returns (result, steps, error)."""
     if seed is not None:
         random.seed(seed)
@@ -61,7 +61,7 @@ def play_game(seek_agent, hide_agent, max_steps=200, capture_distance=2,
 
     env = Environment(
         max_steps=max_steps,
-        deterministic_starts=False,
+        deterministic_starts=deterministic_starts,
         capture_distance_threshold=capture_distance,
         pacman_speed=pacman_speed,
     )
@@ -123,6 +123,8 @@ def main() -> int:
     parser.add_argument("--ghost-obs", type=int, default=5)
     parser.add_argument("--seed-start", type=int, default=0, help="First seed; seeds increment per game.")
     parser.add_argument("--step-timeout", type=float, default=0, help="Per-step timeout in seconds (0=disabled).")
+    parser.add_argument("--start-mode", choices=["stochastic", "deterministic"],
+                        default="stochastic", help="Start positions mode.")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -172,6 +174,7 @@ def main() -> int:
                     ghost_obs=args.ghost_obs,
                     seed=seed,
                     step_timeout=args.step_timeout or None,
+                    deterministic_starts=(args.start_mode == "deterministic"),
                 )
                 seed += 1
                 done += 1

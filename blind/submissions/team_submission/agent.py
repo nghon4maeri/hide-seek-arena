@@ -1949,12 +1949,58 @@ class PacmanAgent(BasePacmanAgent):
         self._dir_streak = 0
         self._visited = {}
         self._step_t0 = 0.0
+        self._vis = None
+        self._cleared = set()
+        self._sightings = 0
+
+    def _build_vis(self):
+        """Precompute which cells each position reveals (cross-rays)."""
+        if self._vis is not None:
+            return
+        ms = self.memory_map
+        H, W = ms.shape
+        self._vis = {}
+        for r in range(H):
+            for c in range(W):
+                if ms[r, c] == 1:
+                    continue
+                seen = {(r, c)}
+                for dr, dc in ag_DIRS:
+                    for d in range(1, 6):
+                        nr, nc = r + dr * d, c + dc * d
+                        if not (0 <= nr < H and 0 <= nc < W):
+                            break
+                        if ms[nr, nc] == 1:
+                            break
+                        seen.add((nr, nc))
+                self._vis[(r, c)] = seen
 
     def _update_memory(self, ms):
         if self.memory_map is None:
             self.memory_map = np.full_like(ms, -1, dtype=int)
         v = (ms != -1)
         self.memory_map[v] = ms[v]
+        if self._vis is not None:
+            for r, c in np.argwhere(ms == 0):
+                self._cleared.add((int(r), int(c)))
+        else:
+            self._build_vis()
+            for r, c in np.argwhere(ms == 0):
+                self._cleared.add((int(r), int(c)))
+
+    def _blitz_target(self, me):
+        """Early-game coverage sweep over the ghost's start region
+        (top half of the map): greedy information gain."""
+        H, W = self.memory_map.shape
+        best, best_sc = None, float("-inf")
+        for (r, c), seen in self._vis.items():
+            if r > 9:            # ghost starts in the top band / center row
+                continue
+            gain = len(seen - self._cleared)
+            sc = gain * 12.0 - ag_manhattan((r, c), me) * 4.0
+            if sc > best_sc:
+                best_sc, best = sc, (r, c)
+        return best
 
     def _ensure_topo(self):
         if not self.topo.ready and self.memory_map is not None:
@@ -1987,6 +2033,50 @@ class PacmanAgent(BasePacmanAgent):
             else:
                 break
         return (move, steps)
+
+    def _apply_steps(self, me, delta, steps, ms):
+        cur = me
+        for _ in range(steps):
+            nxt = (cur[0] + delta[0], cur[1] + delta[1])
+            if not (0 <= nxt[0] < 21 and 0 <= nxt[1] < 21):
+                break
+            if ag_cell(ms, nxt[0], nxt[1]) == 1:
+                break
+            cur = nxt
+        return cur
+
+    def _guaranteed_capture(self, me, enemy, ms):
+        """If some move captures the ghost no matter where it moves."""
+        legal = ag_legal(me, ms)
+        for d in legal:
+            for steps in (2, 1):
+                if steps > self.speed:
+                    continue
+                npac = self._apply_steps(me, d, steps, ms)
+                worst = -1
+                for m in [(-1, 0), (1, 0), (0, -1), (0, 1), (0, 0)]:
+                    ng = (enemy[0] + m[0], enemy[1] + m[1])
+                    if 0 <= ng[0] < 21 and 0 <= ng[1] < 21 and ag_cell(ms, ng[0], ng[1]) != 1:
+                        worst = max(worst, ag_manhattan(npac, ng))
+                    else:
+                        worst = max(worst, ag_manhattan(npac, enemy))
+                if worst < 2:
+                    return (d, steps)
+        return None
+
+    def _chase_belief_target(self, me):
+        """Highest-probability cell (ghost moves 1/turn -> tight belief)."""
+        H, W = self.memory_map.shape
+        best, best_sc = None, float("-inf")
+        for r in range(H):
+            for c in range(W):
+                prob = self.belief.prob_at((r, c))
+                if prob <= 0:
+                    continue
+                sc = prob * 500.0 - ag_manhattan((r, c), me)
+                if sc > best_sc:
+                    best_sc, best = sc, (r, c)
+        return best
 
     def _track_enemy(self, enemy_pos):
         if self.last_seen is None:
@@ -2064,7 +2154,8 @@ class PacmanAgent(BasePacmanAgent):
             self._track_enemy(enemy)
             self.last_seen = enemy
             self._last_seen_step = step_number
-        self.belief.update(me, enemy, self.memory_map, enemy_speed=2)
+            self._sightings += 1
+        self.belief.update(me, enemy, self.memory_map, enemy_speed=1)
 
         if self._visited.get(me, 0) >= 5:
             self._visited.clear()
@@ -2079,6 +2170,10 @@ class PacmanAgent(BasePacmanAgent):
                     ag_apply(me, d), self.memory_map)), Move.STAY)
 
         if enemy is not None:
+            forced = self._guaranteed_capture(me, enemy, self.memory_map)
+            if forced is not None:
+                d, steps = forced
+                return (MOVE.get(d, Move.STAY), steps)
             intercept = self._intercept(self.memory_map, enemy)
             if intercept:
                 path = ag_astar(self.memory_map, me, intercept)
@@ -2093,7 +2188,18 @@ class PacmanAgent(BasePacmanAgent):
             if me == self.last_seen:
                 self.last_seen = None
             else:
-                path = ag_astar(self.memory_map, me, self.last_seen)
+                target = self._chase_belief_target(me)
+                if target is None or target == me:
+                    target = self.last_seen
+                path = ag_astar(self.memory_map, me, target)
+                if path:
+                    return self._pack_speed(path, me)
+
+        # Early blitz: sweep the ghost's start region before it disperses.
+        if self._sightings == 0 and step_number <= 25:
+            target = self._blitz_target(me)
+            if target is not None and target != me:
+                path = ag_astar(self.memory_map, me, target)
                 if path:
                     return self._pack_speed(path, me)
 
